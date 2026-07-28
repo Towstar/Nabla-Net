@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900">
+  <defs>
+    <marker id="arrow" viewBox="0 -5 10 10" markerWidth="8" markerHeight="8" orient="auto" refX="9">
+      <path d="M0,-5L10,0L0,5" fill="#404040"/>
+    </marker>
+    <style>
+      .title { font-family: Segoe UI, Arial, sans-serif; font-size: 28px; font-weight: 700; fill: #1f2933; }
+      .subtitle { font-family: Segoe UI, Arial, sans-serif; font-size: 15px; fill: #52616f; }
+      .label { font-family: Segoe UI, Arial, sans-serif; font-size: 16px; font-weight: 650; fill: #1f2933; }
+      .small { font-family: Segoe UI, Arial, sans-serif; font-size: 13px; fill: #34495e; }
+      .code { font-family: Consolas, Menlo, monospace; font-size: 12.5px; fill: #243b53; }
+      .formula { font-family: Consolas, Menlo, monospace; font-size: 13.5px; fill: #17202a; }
+      .node { fill: #ffffff; stroke: #263238; stroke-width: 2; }
+      .node-input { fill: #e8f4ff; }
+      .node-hidden-a { fill: #eef8ef; }
+      .node-hidden-b { fill: #f0ecff; }
+      .node-output { fill: #fff3df; }
+      .edge { stroke: #6b7280; stroke-width: 1.25; opacity: 0.72; marker-end: url(#arrow); }
+      .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.4; rx: 8; }
+      .accent-input { fill: #d9ecff; stroke: #80b7e8; }
+      .accent-hidden-a { fill: #ddf4df; stroke: #83c987; }
+      .accent-hidden-b { fill: #ece7ff; stroke: #a795dd; }
+      .accent-output { fill: #ffeac2; stroke: #e0a548; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="900" fill="#ffffff"/>
+
+  <text class="title" x="46" y="48">Forward Pass Cache Map</text>
+  <text class="subtitle" x="46" y="74">Network architecture: {6, 4, 2, 1}. Two hidden tanh layers and one sigmoid output layer.</text>
+
+  <!-- Layer panels -->
+  <rect class="panel accent-input" x="40" y="110" width="225" height="410"/>
+  <rect class="panel accent-hidden-a" x="365" y="135" width="245" height="350"/>
+  <rect class="panel accent-hidden-b" x="710" y="190" width="235" height="250"/>
+  <rect class="panel accent-output" x="1045" y="230" width="200" height="190"/>
+
+  <!-- Dense connections: input to hidden layer 1 -->
+  <g>
+    <line class="edge" x1="150" y1="165" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="165" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="165" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="165" x2="480" y2="415"/>
+    <line class="edge" x1="150" y1="225" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="225" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="225" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="225" x2="480" y2="415"/>
+    <line class="edge" x1="150" y1="285" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="285" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="285" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="285" x2="480" y2="415"/>
+    <line class="edge" x1="150" y1="345" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="345" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="345" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="345" x2="480" y2="415"/>
+    <line class="edge" x1="150" y1="405" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="405" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="405" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="405" x2="480" y2="415"/>
+    <line class="edge" x1="150" y1="465" x2="480" y2="205"/>
+    <line class="edge" x1="150" y1="465" x2="480" y2="275"/>
+    <line class="edge" x1="150" y1="465" x2="480" y2="345"/>
+    <line class="edge" x1="150" y1="465" x2="480" y2="415"/>
+  </g>
+
+  <!-- Dense connections: hidden layer 1 to hidden layer 2 -->
+  <g>
+    <line class="edge" x1="500" y1="205" x2="820" y2="270"/>
+    <line class="edge" x1="500" y1="205" x2="820" y2="360"/>
+    <line class="edge" x1="500" y1="275" x2="820" y2="270"/>
+    <line class="edge" x1="500" y1="275" x2="820" y2="360"/>
+    <line class="edge" x1="500" y1="345" x2="820" y2="270"/>
+    <line class="edge" x1="500" y1="345" x2="820" y2="360"/>
+    <line class="edge" x1="500" y1="415" x2="820" y2="270"/>
+    <line class="edge" x1="500" y1="415" x2="820" y2="360"/>
+  </g>
+
+  <!-- Dense connections: hidden layer 2 to output -->
+  <g>
+    <line class="edge" x1="840" y1="270" x2="1135" y2="325"/>
+    <line class="edge" x1="840" y1="360" x2="1135" y2="325"/>
+  </g>
+
+  <!-- Input nodes -->
+  <circle class="node node-input" cx="150" cy="165" r="16"/>
+  <circle class="node node-input" cx="150" cy="225" r="16"/>
+  <circle class="node node-input" cx="150" cy="285" r="16"/>
+  <circle class="node node-input" cx="150" cy="345" r="16"/>
+  <circle class="node node-input" cx="150" cy="405" r="16"/>
+  <circle class="node node-input" cx="150" cy="465" r="16"/>
+  <text class="code" x="143" y="169">s0</text>
+  <text class="code" x="143" y="229">s1</text>
+  <text class="code" x="143" y="289">s2</text>
+  <text class="code" x="143" y="349">s3</text>
+  <text class="code" x="143" y="409">s4</text>
+  <text class="code" x="143" y="469">s5</text>
+
+  <!-- Hidden layer 1 nodes -->
+  <circle class="node node-hidden-a" cx="490" cy="205" r="17"/>
+  <circle class="node node-hidden-a" cx="490" cy="275" r="17"/>
+  <circle class="node node-hidden-a" cx="490" cy="345" r="17"/>
+  <circle class="node node-hidden-a" cx="490" cy="415" r="17"/>
+  <text class="code" x="484" y="210">h0</text>
+  <text class="code" x="484" y="280">h1</text>
+  <text class="code" x="484" y="350">h2</text>
+  <text class="code" x="484" y="420">h3</text>
+
+  <!-- Hidden layer 2 nodes -->
+  <circle class="node node-hidden-b" cx="830" cy="270" r="17"/>
+  <circle class="node node-hidden-b" cx="830" cy="360" r="17"/>
+  <text class="code" x="824" y="275">g0</text>
+  <text class="code" x="824" y="365">g1</text>
+
+  <!-- Output node -->
+  <circle class="node node-output" cx="1150" cy="325" r="19"/>
+  <text class="code" x="1144" y="330">y</text>
+
+  <!-- Layer labels -->
+  <text class="label" x="64" y="138">Input d0 = 6</text>
+  <text class="code" x="64" y="548">h^(0) = s</text>
+  <text class="code" x="64" y="571">cache.activations[0]</text>
+
+  <text class="label" x="390" y="165">Hidden d1 = 4</text>
+  <text class="code" x="390" y="515">z^(1) = W^(1)h^(0) + b^(1)</text>
+  <text class="code" x="390" y="538">cache.pre_activations[0]</text>
+  <text class="code" x="390" y="561">h^(1) = tanh(z^(1))</text>
+  <text class="code" x="390" y="584">cache.activations[1]</text>
+  <text class="small" x="390" y="607">layer_index k = 0</text>
+
+  <text class="label" x="735" y="220">Hidden d2 = 2</text>
+  <text class="code" x="735" y="475">z^(2) = W^(2)h^(1) + b^(2)</text>
+  <text class="code" x="735" y="498">cache.pre_activations[1]</text>
+  <text class="code" x="735" y="521">h^(2) = tanh(z^(2))</text>
+  <text class="code" x="735" y="544">cache.activations[2]</text>
+  <text class="small" x="735" y="567">layer_index k = 1</text>
+
+  <text class="label" x="1066" y="260">Output d3 = 1</text>
+  <text class="code" x="1066" y="452">z^(3) = W^(3)h^(2) + b^(3)</text>
+  <text class="code" x="1066" y="475">cache.pre_activations[2]</text>
+  <text class="code" x="1066" y="498">h^(3) = y_ddot = sigma(z^(3))</text>
+  <text class="code" x="1066" y="521">cache.activations[3]</text>
+  <text class="small" x="1066" y="544">layer_index k = 2</text>
+
+  <!-- Edge labels -->
+  <rect class="panel" x="275" y="205" width="86" height="54"/>
+  <text class="code" x="287" y="229">W^(1)</text>
+  <text class="code" x="287" y="248">b^(1)</text>
+
+  <rect class="panel" x="620" y="275" width="86" height="54"/>
+  <text class="code" x="632" y="299">W^(2)</text>
+  <text class="code" x="632" y="318">b^(2)</text>
+
+  <rect class="panel" x="950" y="300" width="86" height="54"/>
+  <text class="code" x="962" y="324">W^(3)</text>
+  <text class="code" x="962" y="343">b^(3)</text>
+
+  <!-- Generic indexing legend -->
+  <rect class="panel" x="54" y="690" width="1170" height="150"/>
+  <text class="label" x="82" y="724">Forward-pass indexing convention</text>
+  <text class="formula" x="82" y="754">C++ layer_index k corresponds to mathematical layer ell = k + 1.</text>
+  <text class="formula" x="82" y="781">previous_activation = cache.activations[k] = h^(k)</text>
+  <text class="formula" x="82" y="808">Inside layer k: z_values[j] = z_j^(k+1), a_values[j] = h_j^(k+1)</text>
+  <text class="formula" x="690" y="781">cache.pre_activations[k] = z^(k+1)</text>
+  <text class="formula" x="690" y="808">cache.activations[k + 1] = h^(k+1)</text>
+</svg>

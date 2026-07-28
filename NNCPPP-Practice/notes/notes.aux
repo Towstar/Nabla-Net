@@ -1,0 +1,54 @@
+\relax 
+\providecommand\babel@aux[2]{}
+\@nameuse{bbl@beforestart}
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\babel@aux{english}{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Overview}{2}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Problem Definition}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Network Architecture and Notation}{2}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Parameter Shapes and Counts}{2}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Implementation Indexing Convention}{2}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Deterministic Xavier Glorot Initialization}{2}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Uniform Xavier-Glorot Initialization \& Interval Radius Derivation}{2}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Deterministic Pseudo-Random Generation}{5}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The Mersenne Twister engine.}{5}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Forward Pass Equations}{8}{section.7}\protected@file@percent }
+\newlabel{sec:forward-pass-equations}{{7}{8}{Forward Pass Equations}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Layerwise Forward Computation}{8}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Code Implementation and Explanation}{9}{subsection.7.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Forward-pass cache map for a \(\{6,4,2,1\}\) dense network. The diagram shows both mathematical notation, such as \(\mathbf  {h}^{(k)}\) and \(\mathbf  {z}^{(k)}\), and the corresponding C++ cache entries, such as \texttt  {activations[k]} and \texttt  {pre\_activations[k]}.}}{10}{figure.1}\protected@file@percent }
+\newlabel{fig:forward-pass-cache-map}{{1}{10}{Forward-pass cache map for a \(\{6,4,2,1\}\) dense network. The diagram shows both mathematical notation, such as \(\mathbf {h}^{(k)}\) and \(\mathbf {z}^{(k)}\), and the corresponding C++ cache entries, such as \texttt {activations[k]} and \texttt {pre\_activations[k]}}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Stable Binary Cross-Entropy}{11}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Bernoulli Maximum-Likelihood Derivation}{11}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Logit Substitution for Numerical Stability}{11}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Reverse-Mode Backpropagation}{12}{section.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Calculus and Linear-Map Foundations}{12}{subsection.9.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Scalar Partial Derivatives}{12}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The Scalar Chain Rule}{12}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Gradients of Scalar-Valued Functions}{12}{section*.5}\protected@file@percent }
+\citation{golden2020}
+\@writefile{toc}{\contentsline {paragraph}{Total Derivatives, Differentials, and Gradients}{13}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Componentwise and Vector Chain Rules}{13}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Adjoints and Reverse Mode}{13}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Matrix Gradients for Scalar Losses}{13}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Reverse-Mode Backpropagation for the MLP}{14}{subsection.9.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Reverse Accumulation on a Computational Graph}{14}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Network and Parameter Notation}{14}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Sample Loss and Output Sensitivity}{14}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Interpreting a Layer Sensitivity}{15}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Differential Derivation for One Affine Layer}{15}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Activation Pullback and Hidden-Layer Recursion}{16}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Corresponding C++ backward pass}{16}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Code-to-equation map}{17}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Backpropagation and Gradient Descent}{17}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Full-Batch Empirical Risk Gradient}{18}{section.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {10.1}Example: Full-Batch XOR Objective for a 2-4-1 Network}{18}{subsection.10.1}\protected@file@percent }
+\bibcite{golden2020}{1}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Numerical Stability and Computational Complexity}{19}{section.11}\protected@file@percent }
+\newlabel{sec:numerical-stability}{{11}{19}{Numerical Stability and Computational Complexity}{section.11}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {12}Iterative Descent Optimization and Step Size Selection}{19}{section.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {13}Experimental Results}{19}{section.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {14}Limitations and Possible Extensions}{19}{section.14}\protected@file@percent }
+\gdef \@abspage@last{19}

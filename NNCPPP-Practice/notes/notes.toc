@@ -1,0 +1,41 @@
+\babel@toc {english}{}\relax 
+\contentsline {section}{\numberline {1}Overview}{2}{section.1}%
+\contentsline {section}{\numberline {2}Problem Definition}{2}{section.2}%
+\contentsline {section}{\numberline {3}Network Architecture and Notation}{2}{section.3}%
+\contentsline {section}{\numberline {4}Parameter Shapes and Counts}{2}{section.4}%
+\contentsline {section}{\numberline {5}Implementation Indexing Convention}{2}{section.5}%
+\contentsline {section}{\numberline {6}Deterministic Xavier Glorot Initialization}{2}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Uniform Xavier-Glorot Initialization \& Interval Radius Derivation}{2}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Deterministic Pseudo-Random Generation}{5}{subsection.6.2}%
+\contentsline {paragraph}{The Mersenne Twister engine.}{5}{section*.2}%
+\contentsline {section}{\numberline {7}Forward Pass Equations}{8}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Layerwise Forward Computation}{8}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Code Implementation and Explanation}{9}{subsection.7.2}%
+\contentsline {section}{\numberline {8}Stable Binary Cross-Entropy}{11}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Bernoulli Maximum-Likelihood Derivation}{11}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Logit Substitution for Numerical Stability}{11}{subsection.8.2}%
+\contentsline {section}{\numberline {9}Reverse-Mode Backpropagation}{12}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Calculus and Linear-Map Foundations}{12}{subsection.9.1}%
+\contentsline {paragraph}{Scalar Partial Derivatives}{12}{section*.3}%
+\contentsline {paragraph}{The Scalar Chain Rule}{12}{section*.4}%
+\contentsline {paragraph}{Gradients of Scalar-Valued Functions}{12}{section*.5}%
+\contentsline {paragraph}{Total Derivatives, Differentials, and Gradients}{13}{section*.6}%
+\contentsline {paragraph}{Componentwise and Vector Chain Rules}{13}{section*.7}%
+\contentsline {paragraph}{Adjoints and Reverse Mode}{13}{section*.8}%
+\contentsline {paragraph}{Matrix Gradients for Scalar Losses}{13}{section*.9}%
+\contentsline {subsection}{\numberline {9.2}Reverse-Mode Backpropagation for the MLP}{14}{subsection.9.2}%
+\contentsline {paragraph}{Reverse Accumulation on a Computational Graph}{14}{section*.10}%
+\contentsline {paragraph}{Network and Parameter Notation}{14}{section*.11}%
+\contentsline {paragraph}{Sample Loss and Output Sensitivity}{14}{section*.12}%
+\contentsline {paragraph}{Interpreting a Layer Sensitivity}{15}{section*.13}%
+\contentsline {paragraph}{Differential Derivation for One Affine Layer}{15}{section*.14}%
+\contentsline {paragraph}{Activation Pullback and Hidden-Layer Recursion}{16}{section*.15}%
+\contentsline {paragraph}{Corresponding C++ backward pass}{16}{section*.16}%
+\contentsline {paragraph}{Code-to-equation map}{17}{section*.17}%
+\contentsline {paragraph}{Backpropagation and Gradient Descent}{17}{section*.18}%
+\contentsline {section}{\numberline {10}Full-Batch Empirical Risk Gradient}{18}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Example: Full-Batch XOR Objective for a 2-4-1 Network}{18}{subsection.10.1}%
+\contentsline {section}{\numberline {11}Numerical Stability and Computational Complexity}{19}{section.11}%
+\contentsline {section}{\numberline {12}Iterative Descent Optimization and Step Size Selection}{19}{section.12}%
+\contentsline {section}{\numberline {13}Experimental Results}{19}{section.13}%
+\contentsline {section}{\numberline {14}Limitations and Possible Extensions}{19}{section.14}%
