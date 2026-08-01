@@ -719,6 +719,41 @@ NetworkGradients batch_gradients(const MLP& network, const Dataset& batch) {
     return averaged;
 }
 
+NetworkGradients batch_gradients(const MLP& network, const Dataset& batch, const ObjectiveFunctions& objective) {
+    if (batch.empty()) {
+        throw std::invalid_argument("Batch must not be empty.");
+    }
+    validate_network(network);
+	validate_objective_functions(objective);
+
+    NetworkGradients averaged = make_zero_gradients_like(network);
+
+    for (const Sample& sample : batch) {
+        const ForwardCache cache = forward_pass(network, sample.input);
+        const NetworkGradients sample_gradients = backward(network, cache, sample.target, objective);
+
+        for (std::size_t layer_index = 0; layer_index < averaged.layers.size(); layer_index++) {
+            for (std::size_t k = 0; k < averaged.layers[layer_index].weights.size(); ++k) {
+                averaged.layers[layer_index].weights[k] += sample_gradients.layers[layer_index].weights[k];
+            }
+            for (std::size_t j = 0; j < averaged.layers[layer_index].biases.size(); ++j) {
+                averaged.layers[layer_index].biases[j] += sample_gradients.layers[layer_index].biases[j];
+            }
+        }
+    }
+
+    for (std::size_t layer_index = 0; layer_index < averaged.layers.size(); layer_index++) {
+        for (std::size_t j = 0; j < averaged.layers[layer_index].biases.size(); j++) {
+            averaged.layers[layer_index].biases[j] /= static_cast<double>(batch.size());
+        }
+        for (std::size_t k = 0; k < averaged.layers[layer_index].weights.size(); k++) {
+            averaged.layers[layer_index].weights[k] /= static_cast<double>(batch.size());
+        }
+    }
+
+    return averaged;
+}
+
 double gradient_l2_norm(const NetworkGradients& gradients) {
     double sum_of_squares = 0.0;
 
@@ -817,20 +852,6 @@ void validate_gradients_like(const MLP& network, const NetworkGradients& gradien
             );
         }
     }
-}
-
-bool wolfe_parameters_are_valid(const WolfeParameters& parameters) noexcept
-{
-    // TODO: validate c1, c2, shrink factor, maximum step, trial count,
-    // and the optional downhill-cosine threshold.
-    static_cast<void>(parameters);
-    return false;
-}
-
-void validate_wolfe_parameters(const WolfeParameters& parameters)
-{
-    // TODO: throw when Wolfe parameters are invalid.
-    static_cast<void>(parameters);
 }
 
 void apply_gradient(MLP& network, const NetworkGradients& gradients, const double learning_rate)
@@ -971,28 +992,89 @@ bool is_downhill_direction(const NetworkGradients& gradient, const NetworkDirect
     return downhill_cos > minimum_cosine;
 }
 
-void apply_direction(
-    MLP& network,
-    const NetworkDirection& direction,
-    const double scale
-)
-{
-    // TODO: apply parameter += scale * direction.
-    static_cast<void>(network);
-    static_cast<void>(direction);
-    static_cast<void>(scale);
+bool wolfe_parameters_are_valid(const WolfeParameters& params) noexcept {
+	double sufficient_decrease = params.sufficient_decrease;
+	double shrink_factor = params.shrink_factor;
+	double maximum_step = params.maximum_step;
+	size_t maximum_trials = params.maximum_trials;
+	double downhill_cosine_threshold = params.minimum_downhill_cosine;
+	double curvature = params.curvature;
+
+
+    if (!std::isfinite(sufficient_decrease) || sufficient_decrease <= 0.0 || sufficient_decrease >= 1.0) {
+        return false;
+	}
+    if (!std::isfinite(shrink_factor) || 0 >= shrink_factor || shrink_factor >= 1) {
+        return false;
+    }
+    if (!std::isfinite(maximum_step) || maximum_step <= 0) {
+        return false;
+    }
+    if (!std::isfinite(maximum_trials) || maximum_trials <= 0) {
+        return false;
+	}
+    if (!std::isfinite(downhill_cosine_threshold) || downhill_cosine_threshold < -1.0 || downhill_cosine_threshold > 1.0) {
+        return false;
+    }
+    if (!std::isfinite(curvature) || curvature <= 0.0 || curvature >= 1.0) {
+        return false;
+	}
+    if (sufficient_decrease >= curvature) {
+        return false;
+	}
+	return true;
 }
 
-MLP make_candidate_network(
-    const MLP& current_network,
-    const NetworkDirection& direction,
-    const double step_size
-)
+void validate_wolfe_parameters(const WolfeParameters& params) {
+    if (!wolfe_parameters_are_valid(params))
+		throw std::invalid_argument("Wolfe parameters are invalid.");
+}
+
+void apply_direction(MLP& network, const NetworkDirection& direction, const double scale) {
+    if (!std::isfinite(scale)) {
+        throw std::invalid_argument("Direction scale must be finite.");
+    }
+
+    validate_network(network);
+    validate_gradients_like(network, direction);
+    MLP candidate = network;
+
+    for (std::size_t layer_index = 0; layer_index < network.layers.size(); ++layer_index) {
+        for (std::size_t parameter_index = 0; parameter_index < network.layers[layer_index].weights.size(); parameter_index++) {
+            const double updated_parameter = network.layers[layer_index].weights[parameter_index] +
+                scale * direction.layers[layer_index].weights[parameter_index];
+
+            if (!std::isfinite(updated_parameter))
+                throw std::overflow_error("Updated weight is not finite.");
+
+            candidate.layers[layer_index].weights[parameter_index] =
+                updated_parameter;
+        }
+
+        for (std::size_t parameter_index = 0; parameter_index < network.layers[layer_index].biases.size(); parameter_index++) {
+            const double updated_parameter = network.layers[layer_index].biases[parameter_index] +
+                scale * direction.layers[layer_index].biases[parameter_index];
+
+            if (!std::isfinite(updated_parameter))
+                throw std::overflow_error("Updated bias is not finite.");
+
+            candidate.layers[layer_index].biases[parameter_index] =
+                updated_parameter;
+        }
+    }
+
+    network = candidate;
+}
+
+MLP make_candidate_network(const MLP& current_network, const NetworkDirection& direction, const double step_size)
 {
-    // TODO: copy the base network and apply the structured direction to the copy.
-    static_cast<void>(direction);
-    static_cast<void>(step_size);
-    return current_network;
+    if (!learning_rate_is_valid(step_size)) {
+        throw std::invalid_argument("Candidate step size must be positive and finite.");
+    }
+
+    MLP candidate_network = current_network;
+    apply_direction(candidate_network, direction, step_size);
+    return candidate_network;
 }
 
 bool satisfies_sufficient_decrease(
@@ -1003,26 +1085,46 @@ bool satisfies_sufficient_decrease(
     const double sufficient_decrease_constant
 )
 {
-    // TODO: implement the Armijo inequality.
-    static_cast<void>(candidate_loss);
-    static_cast<void>(current_loss);
-    static_cast<void>(step_size);
-    static_cast<void>(initial_directional_derivative);
-    static_cast<void>(sufficient_decrease_constant);
-    return false;
+    if (!(std::isfinite(candidate_loss)))
+		throw std::invalid_argument("Candidate loss must be finite.");
+	if (!(std::isfinite(current_loss)))
+		throw std::invalid_argument("Current loss must be finite.");
+	if (!(std::isfinite(step_size)) || step_size <= 0.0)
+		throw std::invalid_argument("Step size must be positive and finite.");
+	if (!(std::isfinite(initial_directional_derivative)))
+		throw std::invalid_argument("Initial directional derivative must be finite.");
+	if (!(std::isfinite(sufficient_decrease_constant)) || sufficient_decrease_constant <= 0.0 || sufficient_decrease_constant >= 1.0)
+		throw std::invalid_argument("Sufficient decrease constant must be in the range (0,1).");
+    if (step_size <= 0)
+		throw std::invalid_argument("Step size must be positive.");
+	if (sufficient_decrease_constant <= 0 || sufficient_decrease_constant >= 1)
+		throw std::invalid_argument("Sufficient decrease constant must be in the range (0,1).");
+	if (initial_directional_derivative >= 0)
+		throw std::invalid_argument("Initial directional derivative must be negative for a downhill direction.");
+
+    bool satisfies = 
+        (candidate_loss <= current_loss + (sufficient_decrease_constant * step_size * initial_directional_derivative)) 
+        ? true 
+        : false;
+    return satisfies;
 }
 
-bool satisfies_strong_curvature(
-    const double candidate_directional_derivative,
-    const double initial_directional_derivative,
-    const double curvature_constant
-)
+bool satisfies_strong_curvature(const double candidate_directional_derivative, const double initial_directional_derivative, const double curvature_constant)
 {
-    // TODO: implement the strong curvature inequality.
-    static_cast<void>(candidate_directional_derivative);
-    static_cast<void>(initial_directional_derivative);
-    static_cast<void>(curvature_constant);
-    return false;
+	if (!(std::isfinite(candidate_directional_derivative)))
+		throw std::invalid_argument("Candidate directional derivative must be finite.");
+	if (!(std::isfinite(initial_directional_derivative)))
+		throw std::invalid_argument("Initial directional derivative must be finite.");
+	if (!(std::isfinite(curvature_constant)) || curvature_constant <= 0.0 || curvature_constant >= 1.0)
+		throw std::invalid_argument("Curvature constant must be in the range (0,1).");
+	if (initial_directional_derivative >= 0)
+		throw std::invalid_argument("Initial directional derivative must be negative for a downhill direction.");
+
+    bool satisfies = 
+        (std::abs(candidate_directional_derivative) <= curvature_constant * std::abs(initial_directional_derivative)) 
+        ? true 
+		: false;
+    return satisfies;
 }
 
 bool satisfies_strong_wolfe(const WolfeEvaluation& evaluation) noexcept
@@ -1037,18 +1139,55 @@ WolfeEvaluation evaluate_wolfe_candidate(
     const NetworkGradients& current_gradient,
     const NetworkDirection& direction,
     const double step_size,
-    const WolfeParameters& parameters
+    const WolfeParameters& parameters,
+	const ObjectiveFunctions& objective
 )
 {
-    // TODO: build one candidate, evaluate loss/gradient, and compute both slopes.
-    static_cast<void>(current_network);
-    static_cast<void>(batch);
-    static_cast<void>(current_loss);
-    static_cast<void>(current_gradient);
-    static_cast<void>(direction);
-    static_cast<void>(step_size);
-    static_cast<void>(parameters);
-    return {};
+	validate_objective_functions(objective);
+	validate_wolfe_parameters(parameters);
+    validate_network(current_network);
+    validate_gradients_like(current_network, current_gradient);
+    validate_gradients_like(current_network, direction);
+    if (!is_downhill_direction(
+        current_gradient,
+        direction,
+        parameters.minimum_downhill_cosine)) {
+        throw std::invalid_argument(
+            "Wolfe line search requires a downhill direction."
+        );
+    }
+
+    auto candidate_network = make_candidate_network(current_network, direction, step_size);
+    auto candidate_loss = batch_loss(candidate_network, batch, objective);
+    bool satisfies_suff_decrease = satisfies_sufficient_decrease(
+        candidate_loss, 
+        current_loss, 
+        step_size, 
+        network_vector_dot(current_gradient, direction), 
+        parameters.sufficient_decrease
+	);
+    auto candidate_gradient = batch_gradients(candidate_network, batch, objective);
+    bool satisfies_strong_curv = satisfies_strong_curvature(
+        network_vector_dot(candidate_gradient, direction),
+        network_vector_dot(current_gradient, direction),
+        parameters.curvature);
+	auto initial_directional_derivative = network_vector_dot(current_gradient, direction);
+	auto candidate_directional_derivative = network_vector_dot(candidate_gradient, direction);
+
+    WolfeEvaluation evaluation
+    {
+        step_size,
+        candidate_loss,
+        initial_directional_derivative,
+        candidate_directional_derivative,
+        satisfies_suff_decrease,
+        satisfies_strong_curv,
+        candidate_network,
+        candidate_gradient,
+        objective
+    };
+
+    return evaluation;
 }
 
 LineSearchResult backtracking_wolfe_stepsize(
@@ -1057,37 +1196,157 @@ LineSearchResult backtracking_wolfe_stepsize(
     const double current_loss,
     const NetworkGradients& current_gradient,
     const NetworkDirection& direction,
-    const WolfeParameters& parameters
+    const WolfeParameters& parameters,
+    const ObjectiveFunctions& objective
 )
 {
-    // TODO: implement the bounded shrinking search and fallback status.
-    static_cast<void>(current_network);
-    static_cast<void>(batch);
-    static_cast<void>(current_loss);
-    static_cast<void>(current_gradient);
-    static_cast<void>(direction);
-    static_cast<void>(parameters);
-    return {};
+    validate_network(current_network);
+    validate_gradients_like(current_network, current_gradient);
+    validate_gradients_like(current_network, direction);
+    validate_objective_functions(objective);
+    validate_wolfe_parameters(parameters);
+
+    if (!std::isfinite(current_loss)) {
+        throw std::invalid_argument("Current loss must be finite.");
+    }
+
+    if (!is_downhill_direction(
+            current_gradient,
+            direction,
+            parameters.minimum_downhill_cosine)) {
+        throw std::invalid_argument("Wolfe line search requires a downhill direction.");
+    }
+
+    const double initial_slope =
+        network_vector_dot(current_gradient, direction);
+    double step_size = parameters.maximum_step;
+
+    LineSearchResult result;
+    result.status = LineSearchStatus::Failed;
+    result.selected_loss = current_loss;
+    result.initial_directional_derivative = initial_slope;
+    result.selected_directional_derivative = initial_slope;
+    result.selected_network = current_network;
+    result.selected_gradient = current_gradient;
+
+    bool have_fallback = false;
+    WolfeEvaluation fallback;
+
+    for (std::size_t trial = 0;
+         trial < parameters.maximum_trials;
+         ++trial) {
+        const WolfeEvaluation evaluation =
+            evaluate_wolfe_candidate(
+                current_network,
+                batch,
+                current_loss,
+                current_gradient,
+                direction,
+                step_size,
+                parameters,
+                objective
+            );
+
+        result.history.push_back({
+            evaluation.step_size,
+            evaluation.candidate_loss,
+            evaluation.candidate_directional_derivative,
+            evaluation.sufficient_decrease,
+            evaluation.strong_curvature
+        });
+
+        if (satisfies_strong_wolfe(evaluation)) {
+            result.status = LineSearchStatus::StrongWolfeSatisfied;
+            result.step_size = evaluation.step_size;
+            result.selected_loss = evaluation.candidate_loss;
+            result.initial_directional_derivative =
+                evaluation.initial_directional_derivative;
+            result.selected_directional_derivative =
+                evaluation.candidate_directional_derivative;
+            result.selected_network = evaluation.candidate_network;
+            result.selected_gradient = evaluation.candidate_gradient;
+            return result;
+        }
+
+        if (evaluation.sufficient_decrease && !have_fallback) {
+            fallback = evaluation;
+            have_fallback = true;
+        }
+
+        if (trial + 1 < parameters.maximum_trials) {
+            step_size *= parameters.shrink_factor;
+            if (!std::isfinite(step_size) || step_size <= 0.0) {
+                break;
+            }
+        }
+    }
+
+    if (have_fallback) {
+        result.status = LineSearchStatus::SufficientDecreaseFallback;
+        result.step_size = fallback.step_size;
+        result.selected_loss = fallback.candidate_loss;
+        result.initial_directional_derivative =
+            fallback.initial_directional_derivative;
+        result.selected_directional_derivative =
+            fallback.candidate_directional_derivative;
+        result.selected_network = fallback.candidate_network;
+        result.selected_gradient = fallback.candidate_gradient;
+    }
+
+    return result;
 }
 
 TrainingStepResult take_wolfe_gradient_step(
     MLP& network,
     const Dataset& batch,
     const WolfeParameters& parameters,
-    const double gradient_tolerance
+    const double gradient_tolerance,
+	const ObjectiveFunctions& objective = make_binary_cross_entropy_objective()
 )
 {
-    // TODO: compute the current gradient, search, and commit an accepted candidate.
-    static_cast<void>(network);
-    static_cast<void>(batch);
-    static_cast<void>(parameters);
-    static_cast<void>(gradient_tolerance);
-    return {};
+	validate_network(network);
+    validate_wolfe_parameters(parameters);
+    if (!std::isfinite(gradient_tolerance) || gradient_tolerance <= 0.0)
+		throw std::invalid_argument("Gradient tolerance must be positive and finite.");
+	auto result = TrainingStepResult{};
+	result.previous_loss = batch_loss(network, batch, objective);
+	auto current_gradient = batch_gradients(network, batch, objective);
+	result.gradient_norm = gradient_l2_norm(current_gradient);
+    if (result.gradient_norm <= gradient_tolerance) {
+        result.new_loss = result.previous_loss;
+		result.updated = false;
+        return result;
+	}
+	auto direction = make_negative_gradient_direction(current_gradient);
+    result.line_search = backtracking_wolfe_stepsize(
+        network,
+        batch,
+        result.previous_loss,
+        current_gradient,
+        direction,
+        parameters,
+        objective
+	);
+    if (result.line_search.status == LineSearchStatus::Failed) {
+		result.new_loss = result.previous_loss;
+        result.updated = false;
+		return result;
+    }
+	network = result.line_search.selected_network;
+	result.new_loss = result.line_search.selected_loss;
+    result.updated = true;
+    return result;
 }
 
 const char* line_search_status_name(const LineSearchStatus status) noexcept
 {
-    // TODO: return a stable diagnostic name for each status.
-    static_cast<void>(status);
-    return "NotImplemented";
+    switch (status) {
+        case LineSearchStatus::StrongWolfeSatisfied:
+            return "StrongWolfeSatisfied";
+        case LineSearchStatus::SufficientDecreaseFallback:
+            return "SufficientDecreaseFallback";
+        case LineSearchStatus::Failed:
+            return "Failed";
+	}
+    return "Unknown";
 }

@@ -87,6 +87,7 @@ struct WolfeEvaluation {
     bool strong_curvature{};
     MLP candidate_network;
     NetworkGradients candidate_gradient;
+	ObjectiveFunctions objective;
 };
 
 struct LineSearchResult {
@@ -160,6 +161,12 @@ NetworkGradients backward(const MLP& network, const ForwardCache& cache, const V
 NetworkGradients batch_gradients(
     const MLP& network,
     const Dataset& batch
+);
+
+NetworkGradients batch_gradients(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective
 );
 
 double gradient_l2_norm(
@@ -245,10 +252,11 @@ WolfeEvaluation evaluate_wolfe_candidate(
     const MLP& current_network,
     const Dataset& batch,
     double current_loss,
-    const NetworkGradients& current_gradient,
-    const NetworkDirection& direction,
-    double step_size,
-    const WolfeParameters& parameters
+	const NetworkGradients& current_gradient,
+	const NetworkDirection& direction,
+	double step_size,
+	const WolfeParameters& parameters,
+	const ObjectiveFunctions& objective = make_binary_cross_entropy_objective()
 );
 
 LineSearchResult backtracking_wolfe_stepsize(
@@ -257,14 +265,16 @@ LineSearchResult backtracking_wolfe_stepsize(
     double current_loss,
     const NetworkGradients& current_gradient,
     const NetworkDirection& direction,
-    const WolfeParameters& parameters
+    const WolfeParameters& parameters,
+    const ObjectiveFunctions& objective = make_binary_cross_entropy_objective()
 );
 
 TrainingStepResult take_wolfe_gradient_step(
     MLP& network,
     const Dataset& batch,
     const WolfeParameters& parameters,
-    double gradient_tolerance
+    double gradient_tolerance,
+	const ObjectiveFunctions& objective = make_binary_cross_entropy_objective()
 );
 
 const char* line_search_status_name(

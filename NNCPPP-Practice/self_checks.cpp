@@ -41,6 +41,20 @@ void require_throws(Function function, std::string_view message)
     throw std::runtime_error(std::string(message));
 }
 
+void require_invalid_wolfe_parameters(
+    WolfeParameters parameters,
+    const std::string_view message
+)
+{
+    require(!wolfe_parameters_are_valid(parameters), message);
+    require_throws(
+        [&parameters] {
+            validate_wolfe_parameters(parameters);
+        },
+        message
+    );
+}
+
 bool same_parameters(const MLP& left, const MLP& right)
 {
     if (left.layer_sizes != right.layer_sizes || left.layers.size() != right.layers.size()) {
@@ -1053,6 +1067,142 @@ void run_objective_backward_checks()
     std::cout << "[PASS] objective-aware backward validation and output gradients\n";
 }
 
+void run_objective_batch_gradient_checks()
+{
+    const ObjectiveFunctions bce = make_binary_cross_entropy_objective();
+    const Dataset batch{
+        { { 0.0, 0.0 }, { 0.0, 1.0 } },
+        { { 0.0, 1.0 }, { 1.0, 0.0 } },
+        { { 1.0, 0.0 }, { 1.0, 1.0 } }
+    };
+
+    {
+        const MLP network = make_mlp({ 2, 2, 2 }, 42);
+        const MLP original = network;
+        const NetworkGradients actual = batch_gradients(network, batch, bce);
+        NetworkGradients expected = make_zero_gradients_like(network);
+
+        for (const Sample& sample : batch) {
+            const ForwardCache cache = forward_pass(network, sample.input);
+            const NetworkGradients sample_gradients =
+                backward(network, cache, sample.target, bce);
+            add_gradients_in_place(expected, sample_gradients);
+        }
+
+        for (LayerGradients& layer_gradients : expected.layers) {
+            for (double& gradient : layer_gradients.weights) {
+                gradient /= static_cast<double>(batch.size());
+            }
+            for (double& gradient : layer_gradients.biases) {
+                gradient /= static_cast<double>(batch.size());
+            }
+        }
+
+        require_gradients_near(
+            network,
+            actual,
+            expected,
+            1e-12,
+            "objective-aware batch gradients should average objective-aware sample gradients"
+        );
+        require(all_gradient_values_finite(actual),
+            "objective-aware batch gradients should be finite");
+        require(same_parameters(network, original),
+            "objective-aware batch gradients should not modify network parameters");
+    }
+
+    {
+        const MLP network = make_zero_network({ 1, 2 });
+        const Dataset two_sample_batch{
+            { { 2.0 }, { 1.0, 0.0 } },
+            { { 4.0 }, { 0.0, 1.0 } }
+        };
+        std::size_t callback_count = 0;
+        ObjectiveFunctions custom = bce;
+        custom.sample_loss_gradient = [&callback_count](
+            const Values& logits,
+            const Values& target
+        ) {
+            ++callback_count;
+            require(logits.size() == 2 && target.size() == 2,
+                "objective-aware batch gradients should pass complete sample vectors");
+            return Values{ 0.25, -0.5 };
+        };
+
+        const NetworkGradients gradients =
+            batch_gradients(network, two_sample_batch, custom);
+
+        require(callback_count == two_sample_batch.size(),
+            "objective-aware batch gradients should evaluate one derivative per sample");
+        require_near(gradients.layers[0].biases[0], 0.25, 1e-12,
+            "objective-aware batch bias gradient should be averaged across samples");
+        require_near(gradients.layers[0].biases[1], -0.5, 1e-12,
+            "objective-aware second batch bias gradient should be averaged across samples");
+        require_near(gradients.layers[0].weights[0], 0.75, 1e-12,
+            "objective-aware batch weight gradient should average sample inputs");
+        require_near(gradients.layers[0].weights[1], -1.5, 1e-12,
+            "objective-aware second batch weight gradient should average sample inputs");
+    }
+
+    {
+        const MLP network = make_zero_network({ 1, 1 });
+        require_throws([&network, &bce] {
+            static_cast<void>(batch_gradients(network, {}, bce));
+        }, "objective-aware batch gradients should reject an empty batch");
+
+        ObjectiveFunctions missing_gradient = bce;
+        missing_gradient.sample_loss_gradient = {};
+        require_throws([&network, &missing_gradient] {
+            static_cast<void>(batch_gradients(
+                network,
+                { { { 0.0 }, { 1.0 } } },
+                missing_gradient
+            ));
+        }, "objective-aware batch gradients should reject missing callbacks");
+    }
+
+    std::cout << "[PASS] objective-aware batch gradients\n";
+}
+
+void run_xor_training_checks()
+{
+    const ObjectiveFunctions objective = make_binary_cross_entropy_objective();
+    const Dataset xor_batch = make_xor_dataset();
+    MLP network = make_mlp({ 2, 4, 1 }, 42);
+
+    const double initial_loss = batch_loss(network, xor_batch, objective);
+    constexpr double learning_rate = 1.0;
+    constexpr std::size_t maximum_iterations = 20000;
+
+    for (std::size_t iteration = 0;
+         iteration < maximum_iterations;
+         ++iteration) {
+        const NetworkGradients gradients =
+            batch_gradients(network, xor_batch, objective);
+        apply_gradient(network, gradients, learning_rate);
+    }
+
+    const double final_loss = batch_loss(network, xor_batch, objective);
+
+    require(final_loss < initial_loss,
+        "fixed full-batch XOR training should reduce the objective");
+    require(final_loss < 0.05,
+        "fixed full-batch XOR training should reach a low final loss");
+
+    for (const Sample& sample : xor_batch) {
+        const ForwardCache cache = forward_pass(network, sample.input);
+        const double prediction = cache.activations.back().front();
+        const bool predicted_label = prediction >= 0.5;
+        const bool expected_label = sample.target.front() >= 0.5;
+
+        require(predicted_label == expected_label,
+            "fixed full-batch XOR training should classify every sample");
+    }
+
+    std::cout << "[PASS] deterministic fixed full-batch XOR training: "
+              << initial_loss << " -> " << final_loss << '\n';
+}
+
 void run_batch_gradient_checks()
 {
     const Dataset xor_batch = make_xor_dataset();
@@ -1579,6 +1729,547 @@ void run_gradient_application_checks()
 
     std::cout << "[PASS] gradient application checks\n";
 }
+
+void run_direction_application_checks()
+{
+    MLP network = make_zero_network({ 2, 1 });
+    network.layers[0].weights = { 1.0, -2.0 };
+    network.layers[0].biases = { 0.5 };
+
+    NetworkDirection direction = make_zero_gradients_like(network);
+    direction.layers[0].weights = { 0.4, -0.6 };
+    direction.layers[0].biases = { -0.5 };
+
+    const MLP original = network;
+    apply_direction(network, direction, 0.25);
+
+    require_near(network.layers[0].weights[0], 1.1, 1e-12,
+        "direction application should add scale times the first weight direction");
+    require_near(network.layers[0].weights[1], -2.15, 1e-12,
+        "direction application should add scale times the second weight direction");
+    require_near(network.layers[0].biases[0], 0.375, 1e-12,
+        "direction application should add scale times the bias direction");
+
+    const MLP candidate = make_candidate_network(original, direction, 0.25);
+    require_near(candidate.layers[0].weights[0], 1.1, 1e-12,
+        "candidate construction should apply the direction to a copy");
+    require_near(candidate.layers[0].weights[1], -2.15, 1e-12,
+        "candidate construction should preserve row-major direction indexing");
+    require_near(candidate.layers[0].biases[0], 0.375, 1e-12,
+        "candidate construction should update biases");
+    require(original.layers[0].weights[0] == 1.0 &&
+                original.layers[0].weights[1] == -2.0 &&
+                original.layers[0].biases[0] == 0.5,
+        "candidate construction should not modify the original network");
+
+    {
+        NetworkDirection wrong_shape = direction;
+        wrong_shape.layers.pop_back();
+        require_throws([&original, &wrong_shape] {
+            MLP copy = original;
+            apply_direction(copy, wrong_shape, 0.25);
+        }, "direction application should reject a layer-count mismatch");
+    }
+
+    {
+        MLP overflow_network = make_zero_network({ 1, 1 });
+        overflow_network.layers[0].weights[0] = std::numeric_limits<double>::max();
+        NetworkDirection overflow_direction = make_zero_gradients_like(overflow_network);
+        overflow_direction.layers[0].weights[0] = 1.0;
+        const MLP overflow_original = overflow_network;
+
+        require_throws([&overflow_network, &overflow_direction] {
+            apply_direction(
+                overflow_network,
+                overflow_direction,
+                std::numeric_limits<double>::max()
+            );
+        }, "direction application should reject non-finite updated parameters");
+        require(same_parameters(overflow_network, overflow_original),
+            "rejected direction application should be transactional");
+    }
+
+    std::cout << "[PASS] structured direction application and candidates\n";
+}
+
+void run_wolfe_parameter_checks()
+{
+    const WolfeParameters defaults{};
+
+    require(wolfe_parameters_are_valid(defaults),
+        "default Wolfe parameters should be valid");
+    validate_wolfe_parameters(defaults);
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.sufficient_decrease = 0.0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "zero sufficient-decrease constant should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.sufficient_decrease = 0.95;
+        invalid.curvature = 0.9;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "sufficient-decrease constant must be below curvature constant"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.curvature = 1.0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "curvature constant equal to one should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.shrink_factor = 0.0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "zero shrink factor should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.shrink_factor = 1.0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "unit shrink factor should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.maximum_step = 0.0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "zero maximum step should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.maximum_trials = 0;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "zero maximum trials should be rejected"
+        );
+    }
+
+    {
+        WolfeParameters invalid = defaults;
+        invalid.minimum_downhill_cosine = 1.1;
+        require_invalid_wolfe_parameters(
+            invalid,
+            "downhill-cosine threshold above one should be rejected"
+        );
+    }
+
+    std::cout << "[PASS] Wolfe parameter validation\n";
+}
+
+void run_wolfe_scalar_checks()
+{
+    {
+        const bool accepted = satisfies_sufficient_decrease(
+            0.8,
+            1.0,
+            0.5,
+            -2.0,
+            0.1
+        );
+        require(accepted,
+            "Armijo should accept a candidate satisfying sufficient decrease");
+    }
+
+    {
+        const bool accepted = satisfies_sufficient_decrease(
+            0.95,
+            1.0,
+            0.5,
+            -2.0,
+            0.1
+        );
+        require(!accepted,
+            "Armijo should reject a candidate failing sufficient decrease");
+    }
+
+    {
+        require_throws([] {
+            static_cast<void>(satisfies_sufficient_decrease(
+                0.8,
+                1.0,
+                0.5,
+                0.0,
+                0.1
+            ));
+        }, "Armijo should reject a non-downhill initial derivative");
+
+        require_throws([] {
+            static_cast<void>(satisfies_sufficient_decrease(
+                0.8,
+                1.0,
+                0.0,
+                -2.0,
+                0.1
+            ));
+        }, "Armijo should reject a non-positive step size");
+
+        require_throws([] {
+            static_cast<void>(satisfies_sufficient_decrease(
+                std::numeric_limits<double>::quiet_NaN(),
+                1.0,
+                0.5,
+                -2.0,
+                0.1
+            ));
+        }, "Armijo should reject a non-finite candidate loss");
+    }
+
+    {
+        const bool accepted = satisfies_strong_curvature(
+            1.0,
+            -2.0,
+            0.9
+        );
+        require(accepted,
+            "strong curvature should accept a candidate within the curvature bound");
+    }
+
+    {
+        const bool accepted = satisfies_strong_curvature(
+            1.9,
+            -2.0,
+            0.9
+        );
+        require(!accepted,
+            "strong curvature should reject a candidate outside the curvature bound");
+    }
+
+    {
+        require_throws([] {
+            static_cast<void>(satisfies_strong_curvature(
+                1.0,
+                0.0,
+                0.9
+            ));
+        }, "strong curvature should reject a non-downhill initial derivative");
+
+        require_throws([] {
+            static_cast<void>(satisfies_strong_curvature(
+                1.0,
+                -2.0,
+                1.0
+            ));
+        }, "strong curvature should reject a curvature constant equal to one");
+
+        require_throws([] {
+            static_cast<void>(satisfies_strong_curvature(
+                std::numeric_limits<double>::infinity(),
+                -2.0,
+                0.9
+            ));
+        }, "strong curvature should reject a non-finite candidate derivative");
+    }
+
+    {
+        WolfeEvaluation evaluation;
+        evaluation.sufficient_decrease = true;
+        evaluation.strong_curvature = true;
+        require(satisfies_strong_wolfe(evaluation),
+            "strong Wolfe should require both scalar conditions");
+
+        evaluation.strong_curvature = false;
+        require(!satisfies_strong_wolfe(evaluation),
+            "strong Wolfe should reject a failed curvature condition");
+    }
+
+    std::cout << "[PASS] Armijo and Strong-Wolfe scalar checks\n";
+}
+
+void run_wolfe_candidate_checks()
+{
+    const MLP network = make_mlp({ 2, 4, 1 }, 42);
+    const Dataset batch = make_xor_dataset();
+    const WolfeParameters parameters{};
+    const ObjectiveFunctions objective = make_binary_cross_entropy_objective();
+    const double current_loss = batch_loss(network, batch, objective);
+    const NetworkGradients current_gradient =
+        batch_gradients(network, batch, objective);
+    const NetworkDirection direction =
+        make_negative_gradient_direction(current_gradient);
+    constexpr double step_size = 0.001;
+    const MLP original = network;
+
+    const WolfeEvaluation evaluation = evaluate_wolfe_candidate(
+        network,
+        batch,
+        current_loss,
+        current_gradient,
+        direction,
+        step_size,
+        parameters,
+        objective
+    );
+
+    const MLP expected_candidate =
+        make_candidate_network(network, direction, step_size);
+    const double expected_loss =
+        batch_loss(expected_candidate, batch, objective);
+    const NetworkGradients expected_gradient =
+        batch_gradients(expected_candidate, batch, objective);
+    const double expected_initial_slope =
+        network_vector_dot(current_gradient, direction);
+    const double expected_candidate_slope =
+        network_vector_dot(expected_gradient, direction);
+
+    require(same_parameters(evaluation.candidate_network, expected_candidate),
+        "Wolfe candidate evaluation should construct the requested candidate");
+    require_near(evaluation.candidate_loss, expected_loss, 1e-12,
+        "Wolfe candidate evaluation should use the candidate loss");
+    require_gradients_near(
+        expected_candidate,
+        evaluation.candidate_gradient,
+        expected_gradient,
+        1e-12,
+        "Wolfe candidate evaluation should use the candidate gradient"
+    );
+    require_near(evaluation.initial_directional_derivative,
+        expected_initial_slope, 1e-12,
+        "Wolfe candidate evaluation should report the initial slope");
+    require_near(evaluation.candidate_directional_derivative,
+        expected_candidate_slope, 1e-12,
+        "Wolfe candidate evaluation should report the candidate slope");
+    require(
+        evaluation.sufficient_decrease == satisfies_sufficient_decrease(
+            expected_loss,
+            current_loss,
+            step_size,
+            expected_initial_slope,
+            parameters.sufficient_decrease
+        ),
+        "Wolfe candidate evaluation should report the Armijo result"
+    );
+    require(
+        evaluation.strong_curvature == satisfies_strong_curvature(
+            expected_candidate_slope,
+            expected_initial_slope,
+            parameters.curvature
+        ),
+        "Wolfe candidate evaluation should report the curvature result"
+    );
+    require(same_parameters(network, original),
+        "Wolfe candidate evaluation should not mutate the current network");
+
+    bool found_curvature_satisfied_trial = false;
+    for (const double trial_step : Values{ 0.001, 0.01, 0.1, 0.25, 0.5, 1.0, 2.0 }) {
+        const WolfeEvaluation trial = evaluate_wolfe_candidate(
+            network,
+            batch,
+            current_loss,
+            current_gradient,
+            direction,
+            trial_step,
+            parameters,
+            objective
+        );
+        const bool expected_curvature = satisfies_strong_curvature(
+            trial.candidate_directional_derivative,
+            trial.initial_directional_derivative,
+            parameters.curvature
+        );
+
+        if (expected_curvature) {
+            found_curvature_satisfied_trial = true;
+            require(trial.strong_curvature,
+                "Wolfe candidate evaluation should use the candidate slope for curvature");
+            break;
+        }
+    }
+
+    require(found_curvature_satisfied_trial,
+        "candidate-evaluation test data should include a curvature-satisfying trial");
+
+    {
+        const MLP custom_network = make_zero_network({ 1, 1 });
+        const Dataset custom_batch{
+            { { 1.0 }, { 1.0 } }
+        };
+        ObjectiveFunctions custom = make_binary_cross_entropy_objective();
+        custom.sample_loss = [](const Values&, const Values&) {
+            return 0.5;
+        };
+        custom.sample_loss_gradient = [](
+            const Values& logits,
+            const Values& target
+        ) {
+            static_cast<void>(target);
+            return Values{ logits.front() < -0.1 ? 0.0 : 0.25 };
+        };
+
+        const double custom_loss =
+            batch_loss(custom_network, custom_batch, custom);
+        const NetworkGradients custom_gradient =
+            batch_gradients(custom_network, custom_batch, custom);
+        const NetworkDirection custom_direction =
+            make_negative_gradient_direction(custom_gradient);
+        const WolfeEvaluation custom_evaluation =
+            evaluate_wolfe_candidate(
+                custom_network,
+                custom_batch,
+                custom_loss,
+                custom_gradient,
+                custom_direction,
+                1.0,
+                parameters,
+                custom
+            );
+
+        require(
+            custom_evaluation.strong_curvature ==
+                satisfies_strong_curvature(
+                    custom_evaluation.candidate_directional_derivative,
+                    custom_evaluation.initial_directional_derivative,
+                    parameters.curvature
+                ),
+            "Wolfe curvature should use the supplied custom objective gradient"
+        );
+    }
+
+    {
+        WolfeParameters invalid = parameters;
+        invalid.shrink_factor = 1.0;
+        require_throws([&network, &batch, &current_loss, &current_gradient,
+                        &direction, &objective, &invalid] {
+            static_cast<void>(evaluate_wolfe_candidate(
+                network,
+                batch,
+                current_loss,
+                current_gradient,
+                direction,
+                step_size,
+                invalid,
+                objective
+            ));
+        }, "Wolfe candidate evaluation should validate Wolfe parameters");
+    }
+
+    require_throws([&network, &batch, &current_loss, &current_gradient, &parameters, &objective, step_size] {
+        const NetworkDirection uphill = current_gradient;
+        static_cast<void>(evaluate_wolfe_candidate(
+            network,
+            batch,
+            current_loss,
+            current_gradient,
+            uphill,
+            step_size,
+            parameters,
+            objective
+        ));
+    }, "Wolfe candidate evaluation should reject an uphill direction");
+
+    std::cout << "[PASS] Wolfe candidate evaluation\n";
+}
+
+void run_backtracking_wolfe_checks()
+{
+    const MLP network = make_mlp({ 2, 4, 1 }, 42);
+    const MLP original = network;
+    const Dataset batch = make_xor_dataset();
+    const WolfeParameters parameters{};
+    const ObjectiveFunctions objective = make_binary_cross_entropy_objective();
+    const double current_loss = batch_loss(network, batch, objective);
+    const NetworkGradients current_gradient =
+        batch_gradients(network, batch, objective);
+    const NetworkDirection direction =
+        make_negative_gradient_direction(current_gradient);
+
+    const LineSearchResult result = backtracking_wolfe_stepsize(
+        network,
+        batch,
+        current_loss,
+        current_gradient,
+        direction,
+        parameters,
+        objective
+    );
+
+    require(!result.history.empty(),
+        "Backtracking Wolfe should record every trial");
+    require(result.history.size() <= parameters.maximum_trials,
+        "Backtracking Wolfe should respect the maximum trial count");
+    require_near(result.history.front().step_size, parameters.maximum_step,
+        1e-12, "Backtracking Wolfe should start at the maximum step");
+
+    for (std::size_t i = 1; i < result.history.size(); ++i) {
+        require_near(
+            result.history[i].step_size,
+            result.history[i - 1].step_size * parameters.shrink_factor,
+            1e-12,
+            "Backtracking Wolfe should shrink the step by the configured factor"
+        );
+    }
+
+    if (result.status == LineSearchStatus::StrongWolfeSatisfied ||
+        result.status == LineSearchStatus::SufficientDecreaseFallback) {
+        require(result.step_size > 0.0,
+            "An accepted Wolfe result should have a positive step size");
+        require(result.selected_loss <= current_loss,
+            "An accepted Wolfe result should not increase the loss");
+        validate_gradients_like(network, result.selected_gradient);
+        require(!same_parameters(result.selected_network, original),
+            "An accepted Wolfe result should select an updated network");
+    }
+    else {
+        require(result.step_size == 0.0,
+            "A failed Wolfe search should not report an accepted step");
+        require(same_parameters(result.selected_network, original),
+            "A failed Wolfe search should preserve the current network");
+    }
+
+    require(same_parameters(network, original),
+        "Backtracking Wolfe should not mutate the current network");
+
+    require_throws([&network, &batch, &current_loss, &current_gradient,
+                    &parameters, &objective] {
+        static_cast<void>(backtracking_wolfe_stepsize(
+            network,
+            batch,
+            current_loss,
+            current_gradient,
+            current_gradient,
+            parameters,
+            objective
+        ));
+    }, "Backtracking Wolfe should reject an uphill direction");
+
+    {
+        WolfeParameters invalid = parameters;
+        invalid.maximum_trials = 0;
+        require_throws([&network, &batch, &current_loss, &current_gradient,
+                        &direction, &invalid, &objective] {
+            static_cast<void>(backtracking_wolfe_stepsize(
+                network,
+                batch,
+                current_loss,
+                current_gradient,
+                direction,
+                invalid,
+                objective
+            ));
+        }, "Backtracking Wolfe should validate the trial limit");
+    }
+
+    std::cout << "[PASS] backtracking Wolfe step search\n";
+}
 }
 
 void run_all_self_checks()
@@ -1596,8 +2287,15 @@ void run_all_self_checks()
     run_zero_gradient_checks();
     run_backward_checks();
     run_objective_backward_checks();
+    run_objective_batch_gradient_checks();
+    run_xor_training_checks();
     run_batch_gradient_checks();
     run_gradient_check_checks();
     run_vector_algebra_checks();
     run_gradient_application_checks();
+    run_direction_application_checks();
+    run_wolfe_parameter_checks();
+    run_wolfe_scalar_checks();
+    run_wolfe_candidate_checks();
+    run_backtracking_wolfe_checks();
 }
