@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 #include <functional>
 
@@ -109,6 +111,79 @@ struct TrainingStepResult {
     LineSearchResult line_search;
 };
 
+// Phase 1 exercise contracts. These declarations describe the objective,
+// regularization, and trainer boundaries; their behavior is intentionally
+// left for the learner to implement in mlp.cpp.
+struct RegularizationTerm {
+    std::string name;
+    std::function<double(const MLP&)> value;
+    std::function<void(const MLP&, NetworkGradients&)> add_gradient;
+    bool smooth{ true };
+    bool includes_biases{ false };
+};
+
+struct ObjectiveConfig {
+    ObjectiveFunctions data_objective;
+    std::vector<RegularizationTerm> regularizers;
+};
+
+enum class OptimizerRequirement {
+    MiniBatchCompatible,
+    DeterministicFullBatch
+};
+
+struct OptimizerContext {
+    MLP& network;
+    const Dataset& batch;
+    const ObjectiveConfig& objective;
+    double current_loss{};
+    NetworkGradients current_gradient;
+};
+
+class Optimizer {
+public:
+    virtual ~Optimizer() = default;
+
+    virtual const char* name() const noexcept = 0;
+    virtual void reset(const MLP& network) = 0;
+    virtual TrainingStepResult step(OptimizerContext& context) = 0;
+};
+
+using OptimizerFactory = std::function<std::unique_ptr<Optimizer>()>;
+
+struct OptimizerSpec {
+    std::string name;
+    OptimizerRequirement requirement{
+        OptimizerRequirement::MiniBatchCompatible
+    };
+    OptimizerFactory make;
+};
+
+namespace Optimizers {
+    extern const OptimizerSpec SGD;
+    extern const OptimizerSpec AdaGrad;
+    extern const OptimizerSpec RMSProp;
+    extern const OptimizerSpec Adam;
+    extern const OptimizerSpec AdamW;
+    extern const OptimizerSpec LBFGS;
+}
+
+struct TrainingConfig {
+    std::size_t epochs{ 1 };
+    std::size_t batch_size{}; // zero means full-dataset batches
+    bool shuffle{ false };
+    std::uint32_t shuffle_seed{ 0 };
+    double gradient_tolerance{}; // zero means disabled
+};
+
+struct TrainingReport {
+    bool completed{};
+    std::size_t epochs_completed{};
+    std::size_t steps{};
+    std::vector<double> losses;
+    std::vector<double> gradient_norms;
+};
+
 /// <summary>
 /// Stores intermediate values to compute gradients without recomputing.
 /// </summary>
@@ -129,8 +204,88 @@ double binary_cross_entropy_from_logit(double logit, double target);
 
 ObjectiveFunctions make_binary_cross_entropy_objective();
 
+Values stable_softmax(const Values& logits);
+
+double cross_entropy_from_logits(
+    const Values& logits,
+    const Values& targets
+);
+
+ObjectiveFunctions make_softmax_cross_entropy_objective();
+
+ObjectiveConfig make_objective_config(
+    const ObjectiveFunctions& data_objective =
+        make_binary_cross_entropy_objective(),
+    std::vector<RegularizationTerm> regularizers = {}
+);
+
+RegularizationTerm make_l2_regularization(
+    double coefficient,
+    bool include_biases = false
+);
+
+RegularizationTerm make_l1_regularization(
+    double coefficient,
+    bool include_biases = false
+);
+
+RegularizationTerm make_elastic_net_regularization(
+    double l1_coefficient,
+    double l2_coefficient,
+    bool include_biases = false
+);
+
+void validate_objective_config(
+    const ObjectiveConfig& objective
+);
+
+double regularization_loss(
+    const MLP& network,
+    const ObjectiveConfig& objective
+);
+
+void add_regularization_gradients(
+    const MLP& network,
+    const ObjectiveConfig& objective,
+    NetworkGradients& gradients
+);
+
+double objective_loss(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveConfig& objective
+);
+
+NetworkGradients objective_gradients(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveConfig& objective
+);
+
 void validate_objective_functions(
     const ObjectiveFunctions& objective
+);
+
+OptimizerSpec make_custom_optimizer(
+    std::string name,
+    OptimizerRequirement requirement,
+    OptimizerFactory factory
+);
+
+void validate_optimizer_spec(
+    const OptimizerSpec& optimizer
+);
+
+void validate_training_config(
+    const TrainingConfig& config
+);
+
+void train(
+    MLP& network,
+    const Dataset& dataset,
+    const OptimizerSpec& optimizer,
+    const TrainingConfig& config,
+    const ObjectiveConfig& objective
 );
 
 double sample_cost(

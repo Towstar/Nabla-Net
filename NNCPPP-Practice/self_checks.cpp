@@ -2272,6 +2272,127 @@ void run_backtracking_wolfe_checks()
 }
 }
 
+// -----------------------------------------------------------------------------
+// Phase 1 exercise skeletons
+// -----------------------------------------------------------------------------
+// These are intentionally documentation-only scaffolds. They identify the
+// checks to implement while the corresponding declarations in mlp.hpp remain
+// unimplemented. Do not add them to run_all_self_checks until their behavior
+// has been implemented in mlp.cpp.
+
+void phase_one_objective_config_skeleton()
+{
+    // TODO: verify that make_objective_config stores the data objective and
+    // regularization terms, and that validate_objective_config rejects empty
+    // callbacks, invalid coefficients, and malformed regularizers.
+}
+
+void phase_one_regularization_skeleton()
+{
+    // TODO: verify L2 loss and gradients, then L1 subgradients and Elastic Net.
+    // TODO: verify that regularization is added once per objective evaluation,
+    // rather than once per sample or divided by batch size.
+}
+
+void phase_one_optimizer_spec_skeleton()
+{
+    // TODO: verify a custom OptimizerSpec preserves its name, requirement,
+    // and factory, and that invalid/empty factories are rejected.
+    // TODO: add built-in pseudoenum checks after Optimizers::* factories exist.
+}
+
+void phase_one_training_config_skeleton()
+{
+    // TODO: verify epochs, batch size, gradient tolerance, and seed validation.
+    // TODO: verify that batch_size == 0 means full-dataset batches.
+}
+
+void run_phase_one_stub_checks()
+{
+    require_throws([] {
+        static_cast<void>(make_objective_config());
+    }, "make_objective_config should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(make_l2_regularization(0.1));
+    }, "L2 regularization should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(make_l1_regularization(0.1));
+    }, "L1 regularization should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(make_elastic_net_regularization(0.1, 0.1));
+    }, "Elastic Net should remain an explicit exercise stub");
+
+    require_throws([] {
+        validate_objective_config({});
+    }, "objective-config validation should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(regularization_loss(
+            make_zero_network({ 1, 1 }),
+            ObjectiveConfig{}
+        ));
+    }, "regularization loss should remain an explicit exercise stub");
+
+    require_throws([] {
+        NetworkGradients gradients;
+        add_regularization_gradients(
+            make_zero_network({ 1, 1 }),
+            ObjectiveConfig{},
+            gradients
+        );
+    }, "regularization gradients should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(objective_loss(
+            make_zero_network({ 1, 1 }),
+            Dataset{ { { 0.0 }, { 0.0 } } },
+            ObjectiveConfig{}
+        ));
+    }, "objective loss should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(objective_gradients(
+            make_zero_network({ 1, 1 }),
+            Dataset{ { { 0.0 }, { 0.0 } } },
+            ObjectiveConfig{}
+        ));
+    }, "objective gradients should remain an explicit exercise stub");
+
+    require_throws([] {
+        static_cast<void>(make_custom_optimizer(
+            "exercise",
+            OptimizerRequirement::MiniBatchCompatible,
+            {}
+        ));
+    }, "custom optimizer construction should remain an explicit exercise stub");
+
+    require_throws([] {
+        validate_optimizer_spec(Optimizers::SGD);
+    }, "optimizer validation should remain an explicit exercise stub");
+
+    require_throws([] {
+        validate_training_config(TrainingConfig{});
+    }, "training-config validation should remain an explicit exercise stub");
+
+    require(!Optimizers::SGD.make,
+        "SGD exercise spec should expose an empty factory until implemented");
+    require(!Optimizers::AdaGrad.make,
+        "AdaGrad exercise spec should expose an empty factory until implemented");
+    require(!Optimizers::RMSProp.make,
+        "RMSProp exercise spec should expose an empty factory until implemented");
+    require(!Optimizers::Adam.make,
+        "Adam exercise spec should expose an empty factory until implemented");
+    require(!Optimizers::AdamW.make,
+        "AdamW exercise spec should expose an empty factory until implemented");
+    require(!Optimizers::LBFGS.make,
+        "LBFGS exercise spec should expose an empty factory until implemented");
+
+    std::cout << "[SCAFFOLD] Phase 1 API stubs are linkable and intentionally unimplemented\n";
+}
+
 void run_all_self_checks()
 {
     run_architecture_checks();
@@ -2298,4 +2419,5 @@ void run_all_self_checks()
     run_wolfe_scalar_checks();
     run_wolfe_candidate_checks();
     run_backtracking_wolfe_checks();
+    run_phase_one_stub_checks();
 }

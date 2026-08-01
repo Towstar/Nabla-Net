@@ -139,6 +139,37 @@ double stable_sigmoid(double x)
     return 1.0 / (1.0 + e);
 }
 
+dValues stable_softmax(const Values& logits) {
+    if (logits.empty()) {
+        throw std::invalid_argument("Logits vector must not be empty.");
+	}
+    for (const double logit : logits) {
+        if (!std::isfinite(logit)) {
+            throw std::invalid_argument("Logits must be finite.");
+        }
+	}
+    const double max_logit = *std::max_element(logits.begin(), logits.end());
+	double sum = 0.0;
+    for (auto logit : logits) {
+		auto shifted = logit - max_logit;
+		double exp_shifted = std::exp(shifted);
+        sum += exp_shifted;
+    }
+    if (!std::isfinite(sum) || sum <= 0.0) {
+        throw std::runtime_error("Softmax computation produced a non-finite or non-positive sum.");
+	}
+	auto probabilities = Values(logits.size(), 0.0);
+    for (std::size_t i = 0; i < logits.size(); ++i) {
+        double shifted = logits[i] - max_logit;
+        double exp_shifted = std::exp(shifted);
+        probabilities[i] = exp_shifted / sum;
+        if (!std::isfinite(probabilities[i])) {
+            throw std::runtime_error("Softmax computation produced a non-finite probability.");
+		}
+    }
+	return probabilities;
+}
+
 ForwardCache forward_pass(const MLP& network, const Values& input)
 {
     validate_network(network);
@@ -210,38 +241,175 @@ double binary_cross_entropy_from_logit(double logit, double target) {
     return (std::max(logit, 0.0) - logit * target + log1p(exp(-abs(logit))));
 }
 
-ObjectiveFunctions make_binary_cross_entropy_objective()
+double cross_entropy_from_logits(
+    const Values& logits,
+    const Values& targets
+)
 {
+    if (logits.empty() || targets.empty()) {
+        throw std::invalid_argument(
+            "Logits and targets must not be empty."
+        );
+    }
+
+    if (logits.size() != targets.size()) {
+        throw std::invalid_argument(
+            "Logits and targets must have the same size."
+        );
+    }
+
+    double target_sum = 0.0;
+
+    for (const double logit : logits) {
+        if (!std::isfinite(logit)) {
+            throw std::invalid_argument("Logits must be finite.");
+        }
+    }
+
+    for (const double target : targets) {
+        if (!std::isfinite(target) ||
+            target < 0.0 ||
+            target > 1.0) {
+            throw std::invalid_argument(
+                "Targets must be finite and in [0,1]."
+            );
+        }
+
+        target_sum += target;
+    }
+
+    constexpr double target_tolerance = 1e-12;
+
+    if (!std::isfinite(target_sum) ||
+        std::abs(target_sum - 1.0) > target_tolerance) {
+        throw std::invalid_argument(
+            "Categorical targets must sum to 1."
+        );
+    }
+
+    const double maximum =
+        *std::max_element(logits.begin(), logits.end());
+
+    double sum_exp = 0.0;
+    double weighted_logit_sum = 0.0;
+
+    for (std::size_t i = 0; i < logits.size(); ++i) {
+        sum_exp += std::exp(logits[i] - maximum);
+        weighted_logit_sum += targets[i] * logits[i];
+    }
+
+    if (!std::isfinite(sum_exp) || sum_exp <= 0.0) {
+        throw std::runtime_error(
+            "Log-sum-exp calculation failed."
+        );
+    }
+
+    const double log_sum_exp =
+        maximum + std::log(sum_exp);
+
+    const double loss =
+        log_sum_exp - weighted_logit_sum;
+
+    if (!std::isfinite(loss)) {
+        throw std::runtime_error(
+            "Cross-entropy loss is not finite."
+        );
+    }
+
+    return loss;
+}
+
+ObjectiveFunctions make_softmax_cross_entropy_objective() {
     ObjectiveFunctions objective;
 
-    objective.sample_loss = [](const Values& logit, const Values& target) 
-    {
-        double average = 0.0;
-        if (logit.empty() || target.empty())
-            throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
-        if (logit.size() != target.size())
-            throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
-            
-        for (int i = 0; i < logit.size(); i++) {
-            if (!std::isfinite(target[i]) ||
-                target[i] < 0.0 ||
-                target[i] > 1.0) {
+    objective.sample_loss =
+        [](const Values& logits, const Values& targets) {
+        return cross_entropy_from_logits(logits, targets);
+        };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
+        static_cast<void>(cross_entropy_from_logits(logits, targets));
+        if (logits.empty() || targets.empty()) {
+            throw std::invalid_argument(
+                "Logits and targets must contain at least one value."
+            );
+        }
+
+        if (logits.size() != targets.size()) {
+            throw std::invalid_argument(
+                "Logits and targets must have matching sizes."
+            );
+        }
+
+        Values probabilities = stable_softmax(logits);
+        Values gradient(logits.size(), 0.0);
+        double target_sum = 0.0;
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            if (!std::isfinite(targets[i]) ||
+                targets[i] < 0.0 ||
+                targets[i] > 1.0) {
                 throw std::invalid_argument(
-                    "Targets must be finite and in the range [0,1]."
+                    "Targets must be finite and in [0,1]."
                 );
             }
-            double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
-            if (!std::isfinite(acx_term))
-                throw std::invalid_argument("Argument must be finite");
-            double sum = average + acx_term;
-            if (!std::isfinite(sum))
-                throw std::invalid_argument("Argument must be finite");
-            average = sum;
+
+            target_sum += targets[i];
+            gradient[i] = probabilities[i] - targets[i];
+
+            if (!std::isfinite(gradient[i])) {
+                throw std::runtime_error(
+                    "Softmax cross-entropy gradient is not finite."
+                );
+            }
         }
-        return average;
+
+        constexpr double target_tolerance = 1e-12;
+        if (!std::isfinite(target_sum) ||
+            std::abs(target_sum - 1.0) > target_tolerance) {
+            throw std::invalid_argument(
+                "Categorical targets must sum to 1."
+            );
+        }
+
+        return gradient;
     };
 
-    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values{
+    return objective;
+}
+
+ObjectiveFunctions make_mean_squared_error_objective() {
+    throw std::logic_error("Not Implemented");
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logit, const Values& target)
+        {
+            double average = 0.0;
+            if (logit.empty() || target.empty())
+                throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
+            if (logit.size() != target.size())
+                throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
+
+            for (int i = 0; i < logit.size(); i++) {
+                if (!std::isfinite(target[i]) ||
+                    target[i] < 0.0 ||
+                    target[i] > 1.0) {
+                    throw std::invalid_argument(
+                        "Targets must be finite and in the range [0,1]."
+                    );
+                }
+                double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
+                if (!std::isfinite(acx_term))
+                    throw std::invalid_argument("Argument must be finite");
+                double sum = average + acx_term;
+                if (!std::isfinite(sum))
+                    throw std::invalid_argument("Argument must be finite");
+                average = sum;
+            }
+            return average;
+        };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
         if (logits.empty() || targets.empty()) {
             throw std::invalid_argument(
                 "Logits and targets must contain at least one value."
@@ -281,16 +449,89 @@ ObjectiveFunctions make_binary_cross_entropy_objective()
         }
 
         return gradient;
-    };
+        };
 
     return objective;
 }
 
+ObjectiveFunctions make_exponential_objective() {
+    throw std::logic_error("Not Implemented");
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logit, const Values& target)
+        {
+            double average = 0.0;
+            if (logit.empty() || target.empty())
+                throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
+            if (logit.size() != target.size())
+                throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
+
+            for (int i = 0; i < logit.size(); i++) {
+                if (!std::isfinite(target[i]) ||
+                    target[i] < 0.0 ||
+                    target[i] > 1.0) {
+                    throw std::invalid_argument(
+                        "Targets must be finite and in the range [0,1]."
+                    );
+                }
+                double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
+                if (!std::isfinite(acx_term))
+                    throw std::invalid_argument("Argument must be finite");
+                double sum = average + acx_term;
+                if (!std::isfinite(sum))
+                    throw std::invalid_argument("Argument must be finite");
+                average = sum;
+            }
+            return average;
+        };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
+        if (logits.empty() || targets.empty()) {
+            throw std::invalid_argument(
+                "Logits and targets must contain at least one value."
+            );
+        }
+
+        if (logits.size() != targets.size()) {
+            throw std::invalid_argument(
+                "Logits and targets must have matching sizes."
+            );
+        }
+
+        Values gradient(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            if (!std::isfinite(logits[i])) {
+                throw std::invalid_argument("Logits must be finite.");
+            }
+
+            if (!std::isfinite(targets[i]) ||
+                targets[i] < 0.0 ||
+                targets[i] > 1.0) {
+                throw std::invalid_argument(
+                    "Targets must be finite and in the range [0,1]."
+                );
+            }
+
+            gradient[i] =
+                (stable_sigmoid(logits[i]) - targets[i]) / output_width;
+
+            if (!std::isfinite(gradient[i])) {
+                throw std::runtime_error(
+                    "BCE loss gradient produced a non-finite value."
+                );
+            }
+        }
+
+        return gradient;
+        };
+
+    return objective;
+} 
+
 void validate_objective_functions(const ObjectiveFunctions& objective)
 {
-    // TODO for Ethan: keep this validation focused on callback presence.
-    // Callback result size and finite-value checks require a network output
-    // width, so sample_cost/backward should perform those checks at use time.
     if (!objective.sample_loss || !objective.sample_loss_gradient) {
         throw std::invalid_argument(
             "Objective must provide both sample loss callbacks."
@@ -1301,7 +1542,7 @@ TrainingStepResult take_wolfe_gradient_step(
     const Dataset& batch,
     const WolfeParameters& parameters,
     const double gradient_tolerance,
-	const ObjectiveFunctions& objective = make_binary_cross_entropy_objective()
+	const ObjectiveFunctions& objective
 )
 {
 	validate_network(network);
@@ -1347,6 +1588,160 @@ const char* line_search_status_name(const LineSearchStatus status) noexcept
             return "SufficientDecreaseFallback";
         case LineSearchStatus::Failed:
             return "Failed";
-	}
+    }
     return "Unknown";
+}
+
+namespace Optimizers {
+    const OptimizerSpec SGD{
+        "SGD",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+
+    const OptimizerSpec AdaGrad{
+        "AdaGrad",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+
+    const OptimizerSpec RMSProp{
+        "RMSProp",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+
+    const OptimizerSpec Adam{
+        "Adam",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+
+    const OptimizerSpec AdamW{
+        "AdamW",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+
+    const OptimizerSpec LBFGS{
+        "LBFGS",
+        OptimizerRequirement::DeterministicFullBatch,
+        {}
+    };
+}
+
+ObjectiveConfig make_objective_config(
+    const ObjectiveFunctions&,
+    std::vector<RegularizationTerm>
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_objective_config."
+    );
+}
+
+RegularizationTerm make_l2_regularization(
+    const double,
+    const bool
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_l2_regularization."
+    );
+}
+
+RegularizationTerm make_l1_regularization(
+    const double,
+    const bool
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_l1_regularization."
+    );
+}
+
+RegularizationTerm make_elastic_net_regularization(
+    const double,
+    const double,
+    const bool
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_elastic_net_regularization."
+    );
+}
+
+void validate_objective_config(const ObjectiveConfig&)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement validate_objective_config."
+    );
+}
+
+double regularization_loss(
+    const MLP&,
+    const ObjectiveConfig&
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement regularization_loss."
+    );
+}
+
+void add_regularization_gradients(
+    const MLP&,
+    const ObjectiveConfig&,
+    NetworkGradients&
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement add_regularization_gradients."
+    );
+}
+
+double objective_loss(
+    const MLP&,
+    const Dataset&,
+    const ObjectiveConfig&
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement objective_loss."
+    );
+}
+
+NetworkGradients objective_gradients(
+    const MLP&,
+    const Dataset&,
+    const ObjectiveConfig&
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement objective_gradients."
+    );
+}
+
+OptimizerSpec make_custom_optimizer(
+    std::string,
+    const OptimizerRequirement,
+    OptimizerFactory
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_custom_optimizer."
+    );
+}
+
+void validate_optimizer_spec(const OptimizerSpec&)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement validate_optimizer_spec."
+    );
+}
+
+void validate_training_config(const TrainingConfig&)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement validate_training_config."
+    );
 }
