@@ -626,6 +626,146 @@ void run_batch_loss_checks()
     std::cout << "[PASS] batch loss\n";
 }
 
+void run_objective_checks()
+{
+    const MLP network = make_zero_network({ 1, 2 });
+    MLP configured_network = network;
+    configured_network.layers[0].biases = { 2.0, -1.0 };
+    const ForwardCache cache = forward_pass(configured_network, { 0.0 });
+
+    const ObjectiveFunctions bce = make_binary_cross_entropy_objective();
+    validate_objective_functions(bce);
+    std::cout << "[PASS] objective callback presence\n";
+
+    const Values bce_gradient = bce.sample_loss_gradient(
+        { 0.0, 2.0 },
+        { 0.0, 1.0 }
+    );
+    require(bce_gradient.size() == 2,
+        "BCE objective gradient should match the output width");
+    require_near(
+        bce_gradient[0],
+        (stable_sigmoid(0.0) - 0.0) / 2.0,
+        1e-12,
+        "BCE objective gradient should use sigmoid(logit) minus target"
+    );
+    require_near(
+        bce_gradient[1],
+        (stable_sigmoid(2.0) - 1.0) / 2.0,
+        1e-12,
+        "BCE objective gradient should preserve output averaging"
+    );
+    require_throws([&bce] {
+        static_cast<void>(bce.sample_loss_gradient({ 0.0 }, { 0.0, 1.0 }));
+    }, "BCE objective gradient should reject mismatched vector sizes");
+    require_throws([&bce] {
+        static_cast<void>(bce.sample_loss_gradient(
+            { 0.0 },
+            { std::numeric_limits<double>::quiet_NaN() }
+        ));
+    }, "BCE objective gradient should reject non-finite targets");
+    std::cout << "[PASS] BCE objective gradient callback\n";
+
+    require_near(
+        sample_cost(configured_network, cache, { 1.0, 0.0 }, bce),
+        0.5 * (
+            binary_cross_entropy_from_logit(2.0, 1.0) +
+            binary_cross_entropy_from_logit(-1.0, 0.0)
+        ),
+        1e-12,
+        "default BCE objective should match the existing sample cost"
+    );
+
+    bool saw_complete_logits = false;
+    bool saw_complete_target = false;
+    std::size_t custom_call_count = 0;
+
+    ObjectiveFunctions custom;
+    custom.sample_loss =
+        [&saw_complete_logits, &saw_complete_target, &custom_call_count](
+            const Values& logits,
+            const Values& target
+        ) {
+            ++custom_call_count;
+            saw_complete_logits = logits == Values{ 2.0, -1.0 };
+            saw_complete_target = target == Values{ 1.0, 0.0 };
+            return 4.0;
+        };
+    custom.sample_loss_gradient = [](const Values& logits, const Values&) {
+        return Values(logits.size(), 0.0);
+    };
+
+    validate_objective_functions(custom);
+    require_near(
+        sample_cost(configured_network, cache, { 1.0, 0.0 }, custom),
+        4.0,
+        1e-12,
+        "custom objective should return its sample loss value"
+    );
+    require(saw_complete_logits,
+        "custom objective should receive every output logit");
+    require(saw_complete_target,
+        "custom objective should receive every target value");
+
+    const Dataset two_sample_batch{
+        { { 0.0 }, { 1.0, 0.0 } },
+        { { 1.0 }, { 0.0, 1.0 } }
+    };
+    custom.sample_loss = [&custom_call_count](const Values&, const Values&) {
+        ++custom_call_count;
+        return custom_call_count == 2 ? 6.0 : 2.0;
+    };
+    custom_call_count = 0;
+
+    require_near(
+        batch_loss(configured_network, two_sample_batch, custom),
+        4.0,
+        1e-12,
+        "objective-aware batch loss should average sample losses"
+    );
+    require(custom_call_count == 2,
+        "objective-aware batch loss should evaluate every sample once");
+
+    ObjectiveFunctions overflowing_batch = custom;
+    overflowing_batch.sample_loss = [](const Values&, const Values&) {
+        return std::numeric_limits<double>::max();
+    };
+    require_throws([&configured_network, &two_sample_batch, &overflowing_batch] {
+        static_cast<void>(batch_loss(
+            configured_network,
+            two_sample_batch,
+            overflowing_batch
+        ));
+    }, "objective-aware batch loss should reject non-finite accumulation");
+
+    ObjectiveFunctions missing_loss = custom;
+    missing_loss.sample_loss = {};
+    require_throws([&missing_loss] {
+        validate_objective_functions(missing_loss);
+    }, "objective validation should reject a missing sample-loss callback");
+
+    ObjectiveFunctions missing_gradient = custom;
+    missing_gradient.sample_loss_gradient = {};
+    require_throws([&missing_gradient] {
+        validate_objective_functions(missing_gradient);
+    }, "objective validation should reject a missing derivative callback");
+
+    ObjectiveFunctions nonfinite_loss = custom;
+    nonfinite_loss.sample_loss = [](const Values&, const Values&) {
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    require_throws([&configured_network, &cache, &nonfinite_loss] {
+        static_cast<void>(sample_cost(
+            configured_network,
+            cache,
+            { 1.0, 0.0 },
+            nonfinite_loss
+        ));
+    }, "objective-aware sample cost should reject non-finite loss results");
+
+    std::cout << "[PASS] objective callback contract\n";
+}
+
 void require_zero_gradient_layout(
     const MLP& network,
     const NetworkGradients& gradients
@@ -800,6 +940,117 @@ void require_gradients_near(
             );
         }
     }
+}
+
+void run_objective_backward_checks()
+{
+    const ObjectiveFunctions bce = make_binary_cross_entropy_objective();
+
+    {
+        const MLP network = make_zero_network({ 1, 2 });
+        const Values input{ 2.0 };
+        const Values target{ 1.0, 0.0 };
+        const ForwardCache cache = forward_pass(network, input);
+
+        std::size_t callback_count = 0;
+        ObjectiveFunctions custom = bce;
+        custom.sample_loss_gradient = [&callback_count](
+            const Values& logits,
+            const Values& target_values
+        ) {
+            ++callback_count;
+            require(logits.size() == 2,
+                "objective backward should pass the complete output logits");
+            require(target_values.size() == 2,
+                "objective backward should pass the complete target");
+            return Values{ 0.25, -0.5 };
+        };
+
+        const NetworkGradients gradients =
+            backward(network, cache, target, custom);
+
+        require(callback_count == 1,
+            "objective gradient callback should be called exactly once");
+        require_near(gradients.layers[0].biases[0], 0.25, 1e-12,
+            "objective output bias gradient should use callback component zero");
+        require_near(gradients.layers[0].biases[1], -0.5, 1e-12,
+            "objective output bias gradient should use callback component one");
+        require_near(gradients.layers[0].weights[0], 0.5, 1e-12,
+            "objective weight gradient should equal delta times input");
+        require_near(gradients.layers[0].weights[1], -1.0, 1e-12,
+            "objective second weight gradient should equal delta times input");
+    }
+
+    {
+        const MLP network = make_zero_network({ 1, 2 });
+        const ForwardCache cache = forward_pass(network, { 0.0 });
+        ObjectiveFunctions wrong_size = bce;
+        wrong_size.sample_loss_gradient = [](const Values&, const Values&) {
+            return Values{ 0.25, -0.5, 1.0 };
+        };
+
+        require_throws([&network, &cache, &wrong_size] {
+            static_cast<void>(backward(
+                network,
+                cache,
+                { 1.0, 0.0 },
+                wrong_size
+            ));
+        }, "objective backward should reject a derivative with the wrong size");
+    }
+
+    {
+        const MLP network = make_zero_network({ 1, 1 });
+        const ForwardCache cache = forward_pass(network, { 0.0 });
+        ObjectiveFunctions nonfinite = bce;
+        nonfinite.sample_loss_gradient = [](const Values&, const Values&) {
+            return Values{ std::numeric_limits<double>::quiet_NaN() };
+        };
+
+        require_throws([&network, &cache, &nonfinite] {
+            static_cast<void>(backward(network, cache, { 1.0 }, nonfinite));
+        }, "objective backward should reject non-finite derivatives");
+    }
+
+    {
+        const MLP network = make_zero_network({ 1, 1 });
+        const ForwardCache cache = forward_pass(network, { 0.0 });
+        ObjectiveFunctions missing_gradient = bce;
+        missing_gradient.sample_loss_gradient = {};
+
+        require_throws([&network, &cache, &missing_gradient] {
+            static_cast<void>(backward(
+                network,
+                cache,
+                { 1.0 },
+                missing_gradient
+            ));
+        }, "objective backward should reject a missing derivative callback");
+    }
+
+    {
+        MLP network = make_zero_network({ 1, 1, 1 });
+        network.layers[0].weight(0, 0) = 0.4;
+        network.layers[0].biases[0] = -0.1;
+        network.layers[1].weight(0, 0) = 0.7;
+        network.layers[1].biases[0] = -0.2;
+
+        const ForwardCache cache = forward_pass(network, { 0.5 });
+        const Values target{ 1.0 };
+        const NetworkGradients legacy = backward(network, cache, target);
+        const NetworkGradients objective_aware =
+            backward(network, cache, target, bce);
+
+        require_gradients_near(
+            network,
+            objective_aware,
+            legacy,
+            1e-12,
+            "BCE objective-aware backward should match legacy backward"
+        );
+    }
+
+    std::cout << "[PASS] objective-aware backward validation and output gradients\n";
 }
 
 void run_batch_gradient_checks()
@@ -1341,8 +1592,10 @@ void run_all_self_checks()
     run_binary_cross_entropy_scalar_checks();
     run_sample_cost_checks();
     run_batch_loss_checks();
+    run_objective_checks();
     run_zero_gradient_checks();
     run_backward_checks();
+    run_objective_backward_checks();
     run_batch_gradient_checks();
     run_gradient_check_checks();
     run_vector_algebra_checks();

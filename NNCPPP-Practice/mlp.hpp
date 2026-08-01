@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 using Values = std::vector<double>;
 
@@ -35,6 +36,21 @@ struct LayerGradients {
 
 struct NetworkGradients {
     std::vector<LayerGradients> layers;
+};
+
+using SampleLossFunction = std::function<double(
+    const Values& output_logits,
+    const Values& target
+)>;
+
+using SampleLossGradientFunction = std::function<Values(
+    const Values& output_logits,
+    const Values& target
+)>;
+
+struct ObjectiveFunctions {
+    SampleLossFunction sample_loss;
+    SampleLossGradientFunction sample_loss_gradient;
 };
 
 using NetworkDirection = NetworkGradients;
@@ -109,14 +125,37 @@ MLP make_mlp(const std::vector<std::size_t>& layer_sizes, std::uint32_t seed);
 double stable_sigmoid(double x);
 ForwardCache forward_pass(const MLP& network, const Values& input);
 double binary_cross_entropy_from_logit(double logit, double target);
+
+ObjectiveFunctions make_binary_cross_entropy_objective();
+
+void validate_objective_functions(
+    const ObjectiveFunctions& objective
+);
+
 double sample_cost(
     const MLP& network,
     const ForwardCache& cache,
     const Values& target
 );
+
+double sample_cost(
+    const MLP& network,
+    const ForwardCache& cache,
+    const Values& target,
+    const ObjectiveFunctions& objective
+);
+
 double batch_loss(const MLP& network, const Dataset& batch);
+
+double batch_loss(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective
+);
 NetworkGradients make_zero_gradients_like(const MLP& network);
+
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target);
+NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective);
 
 NetworkGradients batch_gradients(
     const MLP& network,

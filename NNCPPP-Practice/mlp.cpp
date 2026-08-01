@@ -13,10 +13,7 @@ double& DenseLayer::weight(const std::size_t output_index, const std::size_t inp
     return weights[output_index * input_size + input_index];
 }
 
-const double& DenseLayer::weight(
-    const std::size_t output_index,
-    const std::size_t input_index
-) const
+const double& DenseLayer::weight(const std::size_t output_index, const std::size_t input_index) const
 {
     return weights[output_index * input_size + input_index];
 }
@@ -213,7 +210,121 @@ double binary_cross_entropy_from_logit(double logit, double target) {
     return (std::max(logit, 0.0) - logit * target + log1p(exp(-abs(logit))));
 }
 
-double sample_cost(const MLP& network, const ForwardCache& cache, const Values& target, double* cost_function) {
+ObjectiveFunctions make_binary_cross_entropy_objective()
+{
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logit, const Values& target) 
+    {
+        double average = 0.0;
+        if (logit.empty() || target.empty())
+            throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
+        if (logit.size() != target.size())
+            throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
+            
+        for (int i = 0; i < logit.size(); i++) {
+            if (!std::isfinite(target[i]) ||
+                target[i] < 0.0 ||
+                target[i] > 1.0) {
+                throw std::invalid_argument(
+                    "Targets must be finite and in the range [0,1]."
+                );
+            }
+            double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
+            if (!std::isfinite(acx_term))
+                throw std::invalid_argument("Argument must be finite");
+            double sum = average + acx_term;
+            if (!std::isfinite(sum))
+                throw std::invalid_argument("Argument must be finite");
+            average = sum;
+        }
+        return average;
+    };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values{
+        if (logits.empty() || targets.empty()) {
+            throw std::invalid_argument(
+                "Logits and targets must contain at least one value."
+            );
+        }
+
+        if (logits.size() != targets.size()) {
+            throw std::invalid_argument(
+                "Logits and targets must have matching sizes."
+            );
+        }
+
+        Values gradient(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            if (!std::isfinite(logits[i])) {
+                throw std::invalid_argument("Logits must be finite.");
+            }
+
+            if (!std::isfinite(targets[i]) ||
+                targets[i] < 0.0 ||
+                targets[i] > 1.0) {
+                throw std::invalid_argument(
+                    "Targets must be finite and in the range [0,1]."
+                );
+            }
+
+            gradient[i] =
+                (stable_sigmoid(logits[i]) - targets[i]) / output_width;
+
+            if (!std::isfinite(gradient[i])) {
+                throw std::runtime_error(
+                    "BCE loss gradient produced a non-finite value."
+                );
+            }
+        }
+
+        return gradient;
+    };
+
+    return objective;
+}
+
+void validate_objective_functions(const ObjectiveFunctions& objective)
+{
+    // TODO for Ethan: keep this validation focused on callback presence.
+    // Callback result size and finite-value checks require a network output
+    // width, so sample_cost/backward should perform those checks at use time.
+    if (!objective.sample_loss || !objective.sample_loss_gradient) {
+        throw std::invalid_argument(
+            "Objective must provide both sample loss callbacks."
+        );
+    }
+}
+
+/// <summary>
+/// Defaults to BCE
+/// </summary>
+/// <param name="network"></param>
+/// <param name="cache"></param>
+/// <param name="target"></param>
+/// <returns></returns>
+double sample_cost(const MLP& network, const ForwardCache& cache, const Values& target)
+{
+    return sample_cost(
+        network,
+        cache,
+        target,
+        make_binary_cross_entropy_objective()
+    );
+}
+
+/// <summary>
+/// Computes a sample cost
+/// </summary>
+/// <param name="network"></param>
+/// <param name="cache"></param>
+/// <param name="target"></param>
+/// <param name="objective"></param>
+/// <returns></returns>
+double sample_cost(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective){
+    validate_objective_functions(objective);
     validate_network(network);
 
     if (cache.pre_activations.size() != network.layers.size()) {
@@ -230,18 +341,23 @@ double sample_cost(const MLP& network, const ForwardCache& cache, const Values& 
         throw std::invalid_argument("Target size does not match network output layer size.");
     }
 
-    std::size_t output_index = 0;
-    const double total_cost = std::accumulate(
-        output_logits.begin(),
-        output_logits.end(),
-        0.0,
-        [&target, &output_index](const double accumulated_cost, const double logit) {
-            return accumulated_cost +
-                binary_cross_entropy_from_logit(logit, target[output_index++]);
+    for (const double logit : output_logits) {
+        if (!std::isfinite(logit)) {
+            throw std::invalid_argument("Output logits must be finite.");
         }
-    );
+    }
 
-    return total_cost / static_cast<double>(output_logits.size());
+    for (const double target_value : target) {
+        if (!std::isfinite(target_value)) {
+            throw std::invalid_argument("Target values must be finite.");
+        }
+    }
+    const double value = objective.sample_loss(output_logits, target);
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument("Objective sample loss must be finite.");
+    }
+
+    return value;
 }
 
 double batch_loss(const MLP& network, const Dataset& batch) {
@@ -255,6 +371,36 @@ double batch_loss(const MLP& network, const Dataset& batch) {
 		    return accumulated_cost + cost;
         });
 	double average = sum / static_cast<double>(batch.size());
+    return average;
+}
+
+double batch_loss(const MLP& network, const Dataset& batch, const ObjectiveFunctions& objective)
+{
+    validate_objective_functions(objective);
+
+    if (batch.empty()) {
+        throw std::invalid_argument("Batch must not be empty.");
+    }
+    double sum = std::accumulate(batch.begin(), batch.end(), 0.0,
+        [&network, objective](double accumulated_cost, const Sample& sample) {
+            const ForwardCache cache = forward_pass(network, sample.input);
+            const double cost = sample_cost(network, cache, sample.target, objective);
+            return accumulated_cost + cost;
+        });
+
+    if (!std::isfinite(sum)) {
+        throw std::overflow_error(
+            "Objective batch loss accumulation is not finite."
+        );
+    }
+
+    const double average = sum / static_cast<double>(batch.size());
+    if (!std::isfinite(average)) {
+        throw std::overflow_error(
+            "Objective batch loss average is not finite."
+        );
+    }
+
     return average;
 }
 
@@ -342,6 +488,68 @@ void validate_backward_inputs(const MLP& network, const ForwardCache& cache, con
     }
 }
 
+void validate_backward_inputs(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective)
+{
+    validate_objective_functions(objective);
+    validate_network(network);
+
+    if (cache.activations.size() != network.layer_sizes.size()) {
+        throw std::invalid_argument(
+            "Forward cache activation count does not match network architecture."
+        );
+    }
+
+    if (cache.pre_activations.size() != network.layers.size()) {
+        throw std::invalid_argument(
+            "Forward cache pre-activation count does not match network layers."
+        );
+    }
+
+    for (std::size_t layer_index = 0; layer_index < cache.activations.size(); ++layer_index) {
+        const Values& activation = cache.activations[layer_index];
+
+        if (activation.size() != network.layer_sizes[layer_index]) {
+            throw std::invalid_argument(
+                "Forward cache activation size does not match network architecture."
+            );
+        }
+
+        for (const double value : activation) {
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument("Forward cache activations must be finite.");
+            }
+        }
+    }
+
+    for (std::size_t layer_index = 0;
+        layer_index < cache.pre_activations.size();
+        ++layer_index) {
+        const Values& pre_activation = cache.pre_activations[layer_index];
+
+        if (pre_activation.size() != network.layers[layer_index].output_size) {
+            throw std::invalid_argument(
+                "Forward cache pre-activation size does not match layer output size."
+            );
+        }
+
+        for (const double value : pre_activation) {
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument("Forward cache pre-activations must be finite.");
+            }
+        }
+    }
+
+    if (target.size() != network.layer_sizes.back()) {
+        throw std::invalid_argument("Target size does not match network output layer size.");
+    }
+
+    for (const double value : target) {
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("Target values must be finite.");
+        }
+    }
+}
+
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target) {
     validate_backward_inputs(network, cache, target);
     NetworkGradients gradients = make_zero_gradients_like(network);
@@ -385,6 +593,81 @@ NetworkGradients backward(const MLP& network, const ForwardCache& cache, const V
     for (std::size_t layer_index = 0;
          layer_index < network.layers.size();
          ++layer_index) {
+        const DenseLayer& layer = network.layers[layer_index];
+        const Values& previous_activation = cache.activations[layer_index];
+        LayerGradients& layer_gradients = gradients.layers[layer_index];
+
+        for (std::size_t j = 0; j < layer.output_size; ++j) {
+            layer_gradients.biases[j] = deltas[layer_index][j];
+
+            for (std::size_t i = 0; i < layer.input_size; ++i) {
+                layer_gradients.weights[j * layer.input_size + i] =
+                    deltas[layer_index][j] * previous_activation[i];
+            }
+        }
+    }
+
+    return gradients;
+}
+
+NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective) {
+    validate_backward_inputs(network, cache, target, objective);
+
+    NetworkGradients gradients = make_zero_gradients_like(network);
+
+    std::vector<Values> deltas;
+    deltas.reserve(network.layers.size());
+    for (const DenseLayer& layer : network.layers) {
+        deltas.emplace_back(layer.output_size, 0.0);
+    }
+
+    const std::size_t output_layer_index = network.layers.size() - 1;
+    const std::size_t output_width = network.layers[output_layer_index].output_size;
+    const Values& output_logits = cache.pre_activations.back();
+    
+    if (!(output_logits.size() == output_width)) {
+        throw std::invalid_argument("Output logits size is not equal to output width");
+    }
+
+    const Values output_sample_loss_grad =
+        objective.sample_loss_gradient(output_logits, target);
+
+    if (output_sample_loss_grad.size() != output_width) {
+        throw std::invalid_argument(
+            "Objective gradient size does not match the network output width."
+        );
+    }
+    
+    for (const double component : output_sample_loss_grad) {
+        if (!std::isfinite(component)) {
+            throw std::invalid_argument(
+                "Objective gradient values must be finite."
+            );
+        }
+    }
+    
+    deltas[output_layer_index] = output_sample_loss_grad;
+
+    for (std::size_t next_layer_index = output_layer_index;
+        next_layer_index > 0;
+        --next_layer_index) {
+        const std::size_t layer_index = next_layer_index - 1;
+        const DenseLayer& layer = network.layers[layer_index];
+        const DenseLayer& next_layer = network.layers[next_layer_index];
+        const Values& activation = cache.activations[layer_index + 1];
+
+        for (std::size_t j = 0; j < layer.output_size; ++j) {
+            double transported_delta = 0.0;
+            for (std::size_t r = 0; r < next_layer.output_size; ++r) {
+                transported_delta += next_layer.weight(r,j) * deltas[next_layer_index][r];
+            }
+
+            const double tanh_derivative = 1.0 - activation[j] * activation[j];
+            deltas[layer_index][j] = transported_delta * tanh_derivative;
+        }
+    }
+
+    for (std::size_t layer_index = 0; layer_index < network.layers.size(); ++layer_index) {
         const DenseLayer& layer = network.layers[layer_index];
         const Values& previous_activation = cache.activations[layer_index];
         LayerGradients& layer_gradients = gradients.layers[layer_index];
