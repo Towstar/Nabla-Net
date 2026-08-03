@@ -120,6 +120,7 @@ struct RegularizationTerm {
     std::function<void(const MLP&, NetworkGradients&)> add_gradient;
     bool smooth{ true };
     bool includes_biases{ false };
+	double coefficient{ 0.0 };
 };
 
 struct ObjectiveConfig {

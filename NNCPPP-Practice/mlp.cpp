@@ -139,7 +139,7 @@ double stable_sigmoid(double x)
     return 1.0 / (1.0 + e);
 }
 
-dValues stable_softmax(const Values& logits) {
+Values stable_softmax(const Values& logits) {
     if (logits.empty()) {
         throw std::invalid_argument("Logits vector must not be empty.");
 	}
@@ -317,6 +317,82 @@ double cross_entropy_from_logits(
     }
 
     return loss;
+}
+
+ObjectiveFunctions make_binary_cross_entropy_objective()
+{
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logit, const Values& target)
+        {
+            double average = 0.0;
+            if (logit.empty() || target.empty())
+                throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
+            if (logit.size() != target.size())
+                throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
+
+            for (int i = 0; i < logit.size(); i++) {
+                if (!std::isfinite(target[i]) ||
+                    target[i] < 0.0 ||
+                    target[i] > 1.0) {
+                    throw std::invalid_argument(
+                        "Targets must be finite and in the range [0,1]."
+                    );
+                }
+                double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
+                if (!std::isfinite(acx_term))
+                    throw std::invalid_argument("Argument must be finite");
+                double sum = average + acx_term;
+                if (!std::isfinite(sum))
+                    throw std::invalid_argument("Argument must be finite");
+                average = sum;
+            }
+            return average;
+        };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
+        if (logits.empty() || targets.empty()) {
+            throw std::invalid_argument(
+                "Logits and targets must contain at least one value."
+            );
+        }
+
+        if (logits.size() != targets.size()) {
+            throw std::invalid_argument(
+                "Logits and targets must have matching sizes."
+            );
+        }
+
+        Values gradient(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            if (!std::isfinite(logits[i])) {
+                throw std::invalid_argument("Logits must be finite.");
+            }
+
+            if (!std::isfinite(targets[i]) ||
+                targets[i] < 0.0 ||
+                targets[i] > 1.0) {
+                throw std::invalid_argument(
+                    "Targets must be finite and in the range [0,1]."
+                );
+            }
+
+            gradient[i] =
+                (stable_sigmoid(logits[i]) - targets[i]) / output_width;
+
+            if (!std::isfinite(gradient[i])) {
+                throw std::runtime_error(
+                    "BCE loss gradient produced a non-finite value."
+                );
+            }
+        }
+
+        return gradient;
+        };
+
+    return objective;
 }
 
 ObjectiveFunctions make_softmax_cross_entropy_objective() {
@@ -1631,13 +1707,18 @@ namespace Optimizers {
 }
 
 ObjectiveConfig make_objective_config(
-    const ObjectiveFunctions&,
-    std::vector<RegularizationTerm>
+    const ObjectiveFunctions& data_objective,
+    std::vector<RegularizationTerm> regularization_terms
 )
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement make_objective_config."
-    );
+	ObjectiveConfig config{
+        data_objective,
+        std::move(regularization_terms)
+	};
+    
+    validate_objective_config(config);
+
+    return config;
 }
 
 RegularizationTerm make_l2_regularization(
@@ -1671,54 +1752,108 @@ RegularizationTerm make_elastic_net_regularization(
     );
 }
 
-void validate_objective_config(const ObjectiveConfig&)
+void validate_objective_config(const ObjectiveConfig& config)
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement validate_objective_config."
-    );
+    validate_objective_functions(config.data_objective);
+    
+    for (const RegularizationTerm& term : config.regularizers) {
+        if (term.name.empty()) {
+            throw std::invalid_argument(
+                "Regularization term name must not be empty."
+            );
+        }
+        if (!std::isfinite(term.coefficient)) {
+            throw std::invalid_argument(
+                "Regularization term must be finite"
+            );
+        }
+        if (term.coefficient < 0.0) {
+            throw std::invalid_argument(
+                "Regularization term coefficient must be non-negative."
+            );
+		}
+        if (!term.value) {
+            throw std::invalid_argument(
+                "Regularization term must provide value callback."
+            );
+        }
+        if (!term.add_gradient) {
+            throw std::invalid_argument(
+                "Regularization term must provide gradient callback."
+            );
+        }
+	}
 }
 
 double regularization_loss(
-    const MLP&,
-    const ObjectiveConfig&
+    const MLP& network,
+    const ObjectiveConfig& config
 )
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement regularization_loss."
-    );
+	validate_objective_config(config);
+	double total_loss = 0.0;
+
+    for (const RegularizationTerm& term : config.regularizers) {
+        double term_loss = term.value(network);
+        if (!std::isfinite(term_loss)) {
+            throw std::invalid_argument(
+                "Regularization term loss must be finite."
+            );
+        }
+        total_loss += term.coefficient * term_loss;
+        if (!std::isfinite(total_loss)) {
+            throw std::overflow_error(
+                "Total regularization loss overflowed."
+            );
+        }
+    }
+	return total_loss;
 }
 
 void add_regularization_gradients(
-    const MLP&,
-    const ObjectiveConfig&,
-    NetworkGradients&
+    const MLP& network,
+    const ObjectiveConfig& config,
+    NetworkGradients& gradients
 )
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement add_regularization_gradients."
-    );
+    validate_objective_config(config);
+	validate_gradients_like(network, gradients);
+    for (const RegularizationTerm& term : config.regularizers) {
+        NetworkGradients cand = gradients;
+		term.add_gradient(network, cand);
+		validate_gradients_like(network, cand);
+		gradients = std::move(cand);
+	}
 }
 
 double objective_loss(
-    const MLP&,
-    const Dataset&,
-    const ObjectiveConfig&
+    const MLP& network,
+    const Dataset& dataset,
+    const ObjectiveConfig& config
 )
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement objective_loss."
-    );
+	validate_objective_config(config);
+    
+	double loss_no_reg_terms = batch_loss(network, dataset, config.data_objective);
+    double reg_terms = regularization_loss(network, config);
+    double total_loss = loss_no_reg_terms + reg_terms;
+    if (!std::isfinite(total_loss)) {
+        throw std::overflow_error(
+            "Total objective loss overflowed."
+        );
+    }
+	return total_loss;
 }
 
 NetworkGradients objective_gradients(
-    const MLP&,
-    const Dataset&,
-    const ObjectiveConfig&
+    const MLP& network,
+    const Dataset& dataset,
+    const ObjectiveConfig& config
 )
 {
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement objective_gradients."
-    );
+	auto gradients = batch_gradients(network, dataset, config.data_objective);
+	add_regularization_gradients(network, config, gradients);
+	return gradients;
 }
 
 OptimizerSpec make_custom_optimizer(
