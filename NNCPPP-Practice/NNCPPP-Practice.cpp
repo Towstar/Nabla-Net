@@ -2,6 +2,7 @@
 #include <iostream>
 
 #include "mlp.hpp"
+#include "objective_functions.hpp"
 
 void run_all_self_checks();
 

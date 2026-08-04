@@ -7,6 +7,9 @@
 #include <string_view>
 
 #include "mlp.hpp"
+#include "objective_functions.hpp"
+#include "optimizers.hpp"
+#include "wolfe_analysis.hpp"
 
 namespace {
 void require(const bool condition, const std::string_view message)
@@ -40,6 +43,24 @@ void require_throws(Function function, std::string_view message)
 
     throw std::runtime_error(std::string(message));
 }
+
+class TestOptimizer final : public Optimizer
+{
+public:
+    const char* name() const noexcept override
+    {
+        return "TestOptimizer";
+    }
+
+    void reset(const MLP&) override
+    {
+    }
+
+    TrainingStepResult step(OptimizerContext&) override
+    {
+        return {};
+    }
+};
 
 void require_invalid_wolfe_parameters(
     WolfeParameters parameters,
@@ -2296,15 +2317,120 @@ void phase_one_regularization_skeleton()
 
 void phase_one_optimizer_spec_skeleton()
 {
-    // TODO: verify a custom OptimizerSpec preserves its name, requirement,
-    // and factory, and that invalid/empty factories are rejected.
-    // TODO: add built-in pseudoenum checks after Optimizers::* factories exist.
+    bool factory_called = false;
+
+    OptimizerFactory factory = [&factory_called] {
+        factory_called = true;
+        return std::make_unique<TestOptimizer>();
+    };
+
+    const OptimizerSpec custom = make_custom_optimizer(
+        "TestOptimizer",
+        OptimizerRequirement::MiniBatchCompatible,
+        factory
+    );
+
+    require(custom.name == "TestOptimizer",
+        "custom optimizer should preserve its name");
+    require(
+        custom.requirement == OptimizerRequirement::MiniBatchCompatible,
+        "custom optimizer should preserve its requirement"
+    );
+    require(static_cast<bool>(custom.make),
+        "custom optimizer should preserve its factory");
+    require(!factory_called,
+        "validating an optimizer spec should not eagerly invoke its factory");
+
+    validate_optimizer_spec(custom);
+
+    std::unique_ptr<Optimizer> instance = custom.make();
+
+    require(factory_called,
+        "custom optimizer factory should be invoked when requested");
+    require(instance != nullptr,
+        "custom optimizer factory should produce an optimizer instance");
+    require(std::string(instance->name()) == "TestOptimizer",
+        "custom optimizer factory should produce the expected optimizer");
+
+    require_throws([] {
+        static_cast<void>(make_custom_optimizer(
+            "",
+            OptimizerRequirement::MiniBatchCompatible,
+            [] {
+                return std::make_unique<TestOptimizer>();
+            }
+        ));
+    }, "empty custom optimizer names should be rejected");
+
+    require_throws([] {
+        static_cast<void>(make_custom_optimizer(
+            "MissingFactory",
+            OptimizerRequirement::MiniBatchCompatible,
+            {}
+        ));
+    }, "empty custom optimizer factories should be rejected");
+
+    require_throws([] {
+        static_cast<void>(make_custom_optimizer(
+            "InvalidRequirement",
+            static_cast<OptimizerRequirement>(-1),
+            [] {
+                return std::make_unique<TestOptimizer>();
+            }
+        ));
+    }, "invalid optimizer requirements should be rejected");
 }
 
 void phase_one_training_config_skeleton()
 {
-    // TODO: verify epochs, batch size, gradient tolerance, and seed validation.
-    // TODO: verify that batch_size == 0 means full-dataset batches.
+    TrainingConfig full_batch{};
+    validate_training_config(full_batch);
+
+    require(full_batch.epochs == 1,
+        "default training configuration should use one epoch");
+    require(full_batch.batch_size == 0,
+        "zero batch size should represent full-dataset batches");
+    require(full_batch.gradient_tolerance == 0.0,
+        "zero gradient tolerance should disable early stopping");
+
+    TrainingConfig mini_batch{};
+    mini_batch.epochs = 5;
+    mini_batch.batch_size = 4;
+    mini_batch.shuffle = true;
+    mini_batch.shuffle_seed = 1234;
+    mini_batch.gradient_tolerance = 1e-6;
+
+    validate_training_config(mini_batch);
+
+    TrainingConfig zero_epochs{};
+    zero_epochs.epochs = 0;
+
+    require_throws([&zero_epochs] {
+        validate_training_config(zero_epochs);
+    }, "zero training epochs should be rejected");
+
+    TrainingConfig negative_tolerance{};
+    negative_tolerance.gradient_tolerance = -1.0;
+
+    require_throws([&negative_tolerance] {
+        validate_training_config(negative_tolerance);
+    }, "negative gradient tolerance should be rejected");
+
+    TrainingConfig nan_tolerance{};
+    nan_tolerance.gradient_tolerance =
+        std::numeric_limits<double>::quiet_NaN();
+
+    require_throws([&nan_tolerance] {
+        validate_training_config(nan_tolerance);
+    }, "NaN gradient tolerance should be rejected");
+
+    TrainingConfig infinite_tolerance{};
+    infinite_tolerance.gradient_tolerance =
+        std::numeric_limits<double>::infinity();
+
+    require_throws([&infinite_tolerance] {
+        validate_training_config(infinite_tolerance);
+    }, "infinite gradient tolerance should be rejected");
 }
 
 void run_phase_one_stub_checks()
@@ -2369,13 +2495,12 @@ void run_phase_one_stub_checks()
         ));
     }, "custom optimizer construction should remain an explicit exercise stub");
 
-    require_throws([] {
-        validate_optimizer_spec(Optimizers::SGD);
-    }, "optimizer validation should remain an explicit exercise stub");
+    phase_one_optimizer_spec_skeleton();
+    phase_one_training_config_skeleton();
 
     require_throws([] {
-        validate_training_config(TrainingConfig{});
-    }, "training-config validation should remain an explicit exercise stub");
+        validate_optimizer_spec(Optimizers::SGD);
+    }, "unimplemented built-in optimizer factories should be rejected");
 
     require(!Optimizers::SGD.make,
         "SGD exercise spec should expose an empty factory until implemented");
@@ -2390,7 +2515,7 @@ void run_phase_one_stub_checks()
     require(!Optimizers::LBFGS.make,
         "LBFGS exercise spec should expose an empty factory until implemented");
 
-    std::cout << "[SCAFFOLD] Phase 1 API stubs are linkable and intentionally unimplemented\n";
+    std::cout << "[SCAFFOLD] Remaining Phase 1 API stubs are linkable and intentionally unimplemented\n";
 }
 
 void run_all_self_checks()

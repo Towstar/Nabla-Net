@@ -129,10 +129,16 @@
   <ItemGroup>
     <ClCompile Include="mlp.cpp" />
     <ClCompile Include="NNCPPP-Practice.cpp" />
+    <ClCompile Include="objective_functions.cpp" />
+    <ClCompile Include="optimizers.cpp" />
     <ClCompile Include="self_checks.cpp" />
+    <ClCompile Include="wolfe_analysis.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="mlp.hpp" />
+    <ClInclude Include="objective_functions.hpp" />
+    <ClInclude Include="optimizers.hpp" />
+    <ClInclude Include="wolfe_analysis.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
