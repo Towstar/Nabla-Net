@@ -356,77 +356,6 @@ std::size_t parameter_count(const MLP& network)
     return total;
 }
 
-MLP make_zero_network(std::vector<std::size_t> layer_sizes)
-{
-    validate_network_architecture(layer_sizes);
-
-    MLP network;
-    network.layer_sizes = layer_sizes;
-
-    for (std::size_t k = 0; k + 1 < layer_sizes.size(); ++k) {
-        DenseLayer layer;
-        layer.input_size = layer_sizes[k];
-        layer.output_size = layer_sizes[k + 1];
-        layer.weights.resize(layer.input_size * layer.output_size, 0.0);
-        layer.biases.resize(layer.output_size, 0.0);
-
-        network.layers.push_back(layer);
-    }
-
-    return network;
-}
-
-namespace {
-    void initialize_network_glorot(
-        MLP& network,
-        const std::vector<std::size_t>& layer_sizes,
-        std::uint32_t seed
-    );
-
-    void initialize_network_kaiming(
-        MLP& network,
-        const std::vector<std::size_t>& layer_sizes,
-        std::uint32_t seed
-    );
-
-    void initialize_network_lecunn(
-        MLP& network,
-        const std::vector<std::size_t>& layer_sizes,
-        std::uint32_t seed
-    );
-
-    void initialize_network_zero(
-        MLP& network,
-        const std::vector<std::size_t>& layer_sizes,
-        std::uint32_t seed
-    );
-}
-
-void initialize_network(
-    MLP& network,
-    const InitializationType initialization_type,
-    const std::vector<std::size_t>& layer_sizes,
-    const std::uint32_t seed
-)
-{
-    switch (initialization_type) {
-    case InitializationType::XavierGlorot:
-        initialize_network_glorot(network, layer_sizes, seed);
-        break;
-    case InitializationType::KaimingHe:
-        initialize_network_kaiming(network, layer_sizes, seed);
-        break;
-    case InitializationType::LeCunn:
-        initialize_network_lecunn(network, layer_sizes, seed);
-        break;
-    case InitializationType::Zero:
-        initialize_network_zero(network, layer_sizes, seed);
-        break;
-    default:
-        throw std::invalid_argument("Unknown initialization type.");
-    }
-}
-
 namespace {
     void initialize_network_glorot(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
         std::mt19937 rng(seed);
@@ -461,6 +390,51 @@ namespace {
     }
     void initialize_network_zero(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
 
+    }
+}
+
+MLP make_zero_network(std::vector<std::size_t> layer_sizes)
+{
+    validate_network_architecture(layer_sizes);
+
+    MLP network;
+    network.layer_sizes = layer_sizes;
+
+    for (std::size_t k = 0; k + 1 < layer_sizes.size(); ++k) {
+        DenseLayer layer;
+        layer.input_size = layer_sizes[k];
+        layer.output_size = layer_sizes[k + 1];
+        layer.weights.resize(layer.input_size * layer.output_size, 0.0);
+        layer.biases.resize(layer.output_size, 0.0);
+
+        network.layers.push_back(layer);
+    }
+
+    return network;
+}
+
+void initialize_network(
+    MLP& network,
+    const InitializationType initialization_type,
+    const std::vector<std::size_t>& layer_sizes,
+    const std::uint32_t seed
+)
+{
+    switch (initialization_type) {
+    case InitializationType::XavierGlorot:
+        initialize_network_glorot(network, layer_sizes, seed);
+        break;
+    case InitializationType::KaimingHe:
+        initialize_network_kaiming(network, layer_sizes, seed);
+        break;
+    case InitializationType::LeCunn:
+        initialize_network_lecunn(network, layer_sizes, seed);
+        break;
+    case InitializationType::Zero:
+        initialize_network_zero(network, layer_sizes, seed);
+        break;
+    default:
+        throw std::invalid_argument("Unknown initialization type.");
     }
 }
 
