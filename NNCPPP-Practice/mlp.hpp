@@ -1,12 +1,65 @@
 #pragma once
 
+#include "common.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include <functional>
 
 using Values = std::vector<double>;
+
+// Activation scaffolding. The scalar aliases are used by the helper for
+// elementwise activations. The public activation callbacks operate on whole
+// vectors so vector-valued activations such as softmax can be added later.
+using ActivationParameter = std::optional<double>;
+
+using ScalarActivationForward = std::function<double(
+    double input,
+    ActivationParameter parameter
+)>;
+
+using ScalarActivationDerivative = std::function<double(
+    double input,
+    ActivationParameter parameter
+)>;
+
+using ActivationForward = std::function<Values(
+    const Values& pre_activations
+)>;
+
+// Computes J(z)^T * upstream_gradient.
+using ActivationBackward = std::function<Values(
+    const Values& pre_activations,
+    const Values& upstream_gradient
+)>;
+
+struct ActivationFunction {
+    std::string name;
+    ActivationForward forward;
+    ActivationBackward backward;
+};
+
+ActivationFunction make_elementwise_activation(
+    std::string name,
+    ScalarActivationForward forward,
+    ScalarActivationDerivative derivative,
+    ActivationParameter parameter = std::nullopt
+);
+
+namespace Activations {
+    extern const ActivationFunction Tanh;
+    extern const ActivationFunction Linear;
+    extern const ActivationFunction ReLU;
+    extern const ActivationFunction Sigmoid;
+    extern const ActivationFunction LeakyReLU;
+    extern const ActivationFunction ELU;
+    extern const ActivationFunction GELU;
+    extern const ActivationFunction SiLU;
+    extern const ActivationFunction Mish;
+}
 
 struct Sample {
     Values input;
@@ -28,6 +81,23 @@ struct DenseLayer {
 struct MLP {
     std::vector<std::size_t> layer_sizes;
     std::vector<DenseLayer> layers;
+    std::vector<ActivationFunction> layer_activations; // Empty implies hidden units are tanh and outputs are sigmoids
+};
+
+enum class InitializationType {
+    XavierGlorot,
+    KaimingHe,
+    LeCunn,
+    Zero
+};
+
+struct NetworkSpec {
+    std::vector<std::size_t> layer_sizes;
+    std::uint32_t seed{ 0 };
+    std::vector<ActivationFunction> layer_activations;
+    InitializationType initialization_type{
+        InitializationType::XavierGlorot
+    };
 };
 
 struct LayerGradients {
@@ -140,7 +210,22 @@ void validate_network(const MLP& network);
 std::size_t parameter_count(const MLP& network);
 
 MLP make_zero_network(std::vector<std::size_t> layer_sizes);
-MLP make_mlp(const std::vector<std::size_t>& layer_sizes, std::uint32_t seed);
+void initialize_network(
+    MLP& network,
+    InitializationType initialization_type,
+    const std::vector<std::size_t>& layer_sizes,
+    std::uint32_t seed
+);
+
+MLP make_mlp(
+    const std::vector<std::size_t>& layer_sizes,
+    std::uint32_t seed,
+    InitializationType initialization_type =
+        InitializationType::XavierGlorot
+);
+
+MLP make_mlp(const NetworkSpec& specification);
+
 double stable_sigmoid(double x);
 ForwardCache forward_pass(const MLP& network, const Values& input);
 NetworkGradients make_zero_gradients_like(const MLP& network);

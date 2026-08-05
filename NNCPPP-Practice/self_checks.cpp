@@ -2756,10 +2756,305 @@ void run_backtracking_wolfe_checks()
 // -----------------------------------------------------------------------------
 // Phase 1 exercise skeletons
 // -----------------------------------------------------------------------------
-// These are intentionally documentation-only scaffolds. They identify the
-// checks to implement while the corresponding declarations in mlp.hpp remain
-// unimplemented. Do not add them to run_all_self_checks until their behavior
-// has been implemented in mlp.cpp.
+// These checks cover the small activation primitive layer. Network-level
+// activation selection remains a later task.
+
+void run_activation_function_checks()
+{
+    require_near(
+        Activations::Linear.forward({ -2.0, 3.0 })[0],
+        -2.0,
+        1e-12,
+        "linear activation should preserve values"
+    );
+
+    require_near(
+        Activations::Linear.backward({ 2.0 }, { 3.0 })[0],
+        3.0,
+        1e-12,
+        "linear activation derivative should be one"
+    );
+
+    const Values relu_values =
+        Activations::ReLU.forward({ -1.0, 0.0, 2.0 });
+    require_near(relu_values[0], 0.0, 1e-12,
+        "ReLU should clamp negative values");
+    require_near(relu_values[1], 0.0, 1e-12,
+        "ReLU should map zero to zero");
+    require_near(relu_values[2], 2.0, 1e-12,
+        "ReLU should preserve positive values");
+
+    const Values relu_gradient =
+        Activations::ReLU.backward(
+            { -1.0, 0.0, 2.0 },
+            { 1.0, 1.0, 1.0 }
+        );
+    require_near(relu_gradient[0], 0.0, 1e-12,
+        "ReLU derivative should be zero for negative inputs");
+    require_near(relu_gradient[1], 0.0, 1e-12,
+        "ReLU derivative at zero should use the chosen zero subgradient");
+    require_near(relu_gradient[2], 1.0, 1e-12,
+        "ReLU derivative should be one for positive inputs");
+
+    const ActivationFunction parameterized_elu =
+        make_elementwise_activation(
+            "parameterized_elu",
+            [](double z, ActivationParameter coefficient) {
+                const double alpha = coefficient.value_or(1.0);
+                return z > 0.0 ? z : alpha * (std::exp(z) - 1.0);
+            },
+            [](double z, ActivationParameter coefficient) {
+                const double alpha = coefficient.value_or(1.0);
+                return z > 0.0 ? 1.0 : alpha * std::exp(z);
+            },
+            0.5
+        );
+
+    require_near(
+        parameterized_elu.forward({ -1.0 })[0],
+        0.5 * (std::exp(-1.0) - 1.0),
+        1e-12,
+        "elementwise activation should pass its optional parameter"
+    );
+
+    require_near(
+        parameterized_elu.backward({ -1.0 }, { 1.0 })[0],
+        0.5 * std::exp(-1.0),
+        1e-12,
+        "activation derivative should receive its optional parameter"
+    );
+
+    require_throws([] {
+        static_cast<void>(make_elementwise_activation(
+            "",
+            [](double, ActivationParameter) { return 0.0; },
+            [](double, ActivationParameter) { return 1.0; }
+        ));
+    }, "activation names should not be empty");
+
+    require_throws([] {
+        static_cast<void>(make_elementwise_activation(
+            "invalid",
+            {},
+            [](double, ActivationParameter) { return 1.0; }
+        ));
+    }, "activation forward callbacks should not be empty");
+
+    require_throws([] {
+        static_cast<void>(Activations::Linear.backward(
+            { 1.0 },
+            { 1.0, 2.0 }
+        ));
+    }, "activation backward sizes should match");
+
+    std::cout << "[PASS] activation primitives and optional parameters\n";
+}
+
+MLP make_mixed_activation_test_network()
+{
+    NetworkSpec specification;
+    specification.layer_sizes = { 2, 2, 2, 1 };
+    specification.seed = 42;
+    specification.layer_activations = {
+        Activations::ReLU,
+        Activations::Tanh,
+        Activations::Linear
+    };
+
+    MLP network = make_mlp(specification);
+
+    network.layers[0].weight(0, 0) = 1.0;
+    network.layers[0].weight(0, 1) = -0.5;
+    network.layers[0].biases[0] = 0.25;
+    network.layers[0].weight(1, 0) = -1.0;
+    network.layers[0].weight(1, 1) = 0.0;
+    network.layers[0].biases[1] = 0.25;
+
+    network.layers[1].weight(0, 0) = 2.0;
+    network.layers[1].weight(0, 1) = -1.0;
+    network.layers[1].biases[0] = 0.1;
+    network.layers[1].weight(1, 0) = -1.0;
+    network.layers[1].weight(1, 1) = 2.0;
+    network.layers[1].biases[1] = -0.2;
+
+    network.layers[2].weight(0, 0) = 1.5;
+    network.layers[2].weight(0, 1) = -0.5;
+    network.layers[2].biases[0] = 0.2;
+
+    return network;
+}
+
+void run_network_activation_checks()
+{
+    {
+        const MLP network = make_mlp({ 2, 4, 1 }, 42);
+        require(network.layer_activations.empty(),
+            "legacy MLP construction should preserve compatibility defaults");
+
+        const ForwardCache cache = forward_pass(network, { 0.0, 0.0 });
+        require_near(cache.activations.back()[0], 0.5, 1e-12,
+            "compatibility defaults should keep a sigmoid output");
+    }
+
+    {
+        const MLP network = make_mixed_activation_test_network();
+        const ForwardCache cache = forward_pass(network, { 1.0, 2.0 });
+
+        require(network.layer_activations.size() == 3,
+            "explicit construction should store one activation per dense layer");
+        require_near(cache.pre_activations[0][0], 0.25, 1e-12,
+            "mixed network first ReLU pre-activation should match");
+        require_near(cache.pre_activations[0][1], -0.75, 1e-12,
+            "mixed network second ReLU pre-activation should match");
+        require_near(cache.activations[1][0], 0.25, 1e-12,
+            "ReLU should preserve the positive component");
+        require_near(cache.activations[1][1], 0.0, 1e-12,
+            "ReLU should clamp the negative component");
+
+        const double first_tanh = std::tanh(0.6);
+        const double second_tanh = std::tanh(-0.45);
+        const double expected_output =
+            0.2 + 1.5 * first_tanh - 0.5 * second_tanh;
+
+        require_near(cache.activations[2][0], first_tanh, 1e-12,
+            "mixed network tanh activation should be selected by layer index");
+        require_near(cache.activations[2][1], second_tanh, 1e-12,
+            "mixed network second tanh activation should be selected by layer index");
+        require_near(cache.activations[3][0], expected_output, 1e-12,
+            "linear output activation should preserve the final pre-activation");
+    }
+
+    {
+        NetworkSpec specification;
+        specification.layer_sizes = { 1, 1 };
+        specification.seed = 42;
+        specification.layer_activations = { Activations::Linear };
+
+        MLP network = make_mlp(specification);
+        network.layers[0].biases[0] = 2.0;
+        const ForwardCache cache = forward_pass(network, { 0.0 });
+
+        require_near(cache.pre_activations[0][0], 2.0, 1e-12,
+            "explicit linear output should preserve its pre-activation");
+        require_near(cache.activations[1][0], 2.0, 1e-12,
+            "explicit linear output should not apply sigmoid");
+    }
+
+    {
+        NetworkSpec invalid_length;
+        invalid_length.layer_sizes = { 2, 2, 1 };
+        invalid_length.layer_activations = { Activations::ReLU };
+
+        require_throws([&invalid_length] {
+            static_cast<void>(make_mlp(invalid_length));
+        }, "network construction should reject an invalid activation count");
+    }
+
+    {
+        NetworkSpec invalid_descriptor;
+        invalid_descriptor.layer_sizes = { 1, 1 };
+        invalid_descriptor.layer_activations = { ActivationFunction{} };
+
+        require_throws([&invalid_descriptor] {
+            static_cast<void>(make_mlp(invalid_descriptor));
+        }, "network construction should reject an invalid activation descriptor");
+    }
+
+    {
+        NetworkSpec invalid_forward;
+        invalid_forward.layer_sizes = { 1, 1 };
+        invalid_forward.layer_activations = {
+            ActivationFunction{
+                "wrong_size",
+                [](const Values&) { return Values{}; },
+                [](const Values&, const Values&) { return Values{ 0.0 }; }
+            }
+        };
+
+        const MLP network = make_mlp(invalid_forward);
+        require_throws([&network] {
+            static_cast<void>(forward_pass(network, { 0.0 }));
+        }, "forward pass should reject an activation result with the wrong size");
+    }
+
+    {
+        NetworkSpec invalid_backward;
+        invalid_backward.layer_sizes = { 1, 1, 1 };
+        invalid_backward.layer_activations = {
+            ActivationFunction{
+                "wrong_backward_size",
+                [](const Values& values) { return Values(values.size(), 0.0); },
+                [](const Values&, const Values&) { return Values{}; }
+            },
+            Activations::Linear
+        };
+
+        const MLP network = make_mlp(invalid_backward);
+        const ForwardCache cache = forward_pass(network, { 0.0 });
+
+        require_throws([&network, &cache] {
+            static_cast<void>(backward(network, cache, { 1.0 }));
+        }, "backward should reject an activation result with the wrong size");
+    }
+
+    {
+        MLP network = make_mixed_activation_test_network();
+        const Dataset batch{ { { 1.0, 2.0 }, { 1.0 } } };
+        const NetworkGradients analytic = batch_gradients(network, batch);
+        constexpr double epsilon = 1e-6;
+        constexpr double tolerance = 2e-5;
+
+        for (std::size_t layer_index = 0;
+             layer_index < network.layers.size();
+             ++layer_index) {
+            DenseLayer& layer = network.layers[layer_index];
+
+            for (double& parameter : layer.weights) {
+                const double original = parameter;
+                parameter = original + epsilon;
+                const double plus_loss = batch_loss(network, batch);
+                parameter = original - epsilon;
+                const double minus_loss = batch_loss(network, batch);
+                parameter = original;
+
+                const double numerical =
+                    (plus_loss - minus_loss) / (2.0 * epsilon);
+                const std::size_t parameter_index =
+                    static_cast<std::size_t>(&parameter - layer.weights.data());
+
+                require_near(
+                    analytic.layers[layer_index].weights[parameter_index],
+                    numerical,
+                    tolerance,
+                    "mixed-activation weight gradient should match finite differences"
+                );
+            }
+
+            for (double& parameter : layer.biases) {
+                const double original = parameter;
+                parameter = original + epsilon;
+                const double plus_loss = batch_loss(network, batch);
+                parameter = original - epsilon;
+                const double minus_loss = batch_loss(network, batch);
+                parameter = original;
+
+                const double numerical =
+                    (plus_loss - minus_loss) / (2.0 * epsilon);
+                const std::size_t parameter_index =
+                    static_cast<std::size_t>(&parameter - layer.biases.data());
+
+                require_near(
+                    analytic.layers[layer_index].biases[parameter_index],
+                    numerical,
+                    tolerance,
+                    "mixed-activation bias gradient should match finite differences"
+                );
+            }
+        }
+    }
+
+    std::cout << "[PASS] network activation selection and mixed gradients\n";
+}
 
 void phase_one_objective_config_skeleton()
 {
@@ -3021,6 +3316,8 @@ void run_phase_one_stub_checks()
 
 void run_all_self_checks()
 {
+    run_activation_function_checks();
+    run_network_activation_checks();
     run_architecture_checks();
     run_parameter_count_checks();
     run_initialization_checks();

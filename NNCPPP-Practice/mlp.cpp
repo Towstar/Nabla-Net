@@ -1,5 +1,6 @@
 #include "mlp.hpp"
 #include "objective_functions.hpp"
+#include "common.hpp"
 
 #include <cmath>
 #include <random>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <format>
 #include <stdexcept>
+#include <utility>
 
 #pragma region Dense Layer Accessors
 
@@ -23,7 +25,268 @@ const double& DenseLayer::weight(const std::size_t output_index, const std::size
 
 #pragma endregion
 
+#pragma region Activation Function Scaffolding
+
+ActivationFunction make_elementwise_activation(
+    std::string name,
+    ScalarActivationForward forward,
+    ScalarActivationDerivative derivative,
+    const ActivationParameter parameter
+)
+{
+    if (name.empty()) {
+        throw std::invalid_argument(
+            "Activation name must not be empty."
+        );
+    }
+
+    if (!forward || !derivative) {
+        throw std::invalid_argument(
+            "Activation must provide forward and derivative callbacks."
+        );
+    }
+
+    if (parameter.has_value() && !std::isfinite(*parameter)) {
+        throw std::invalid_argument(
+            "Activation parameter must be finite when provided."
+        );
+    }
+
+    ActivationFunction activation;
+    activation.name = std::move(name);
+
+    activation.forward = [forward, parameter](
+        const Values& pre_activations
+    ) {
+        if (pre_activations.empty()) {
+            throw std::invalid_argument(
+                "Activation input must not be empty."
+            );
+        }
+
+        Values result;
+        result.reserve(pre_activations.size());
+
+        for (const double input : pre_activations) {
+            if (!std::isfinite(input)) {
+                throw std::invalid_argument(
+                    "Activation inputs must be finite."
+                );
+            }
+
+            const double output = forward(input, parameter);
+            if (!std::isfinite(output)) {
+                throw std::runtime_error(
+                    "Activation forward callback produced a non-finite value."
+                );
+            }
+
+            result.push_back(output);
+        }
+
+        return result;
+    };
+
+    activation.backward = [derivative, parameter](
+        const Values& pre_activations,
+        const Values& upstream_gradient
+    ) {
+        if (pre_activations.empty()) {
+            throw std::invalid_argument(
+                "Activation input must not be empty."
+            );
+        }
+
+        if (pre_activations.size() != upstream_gradient.size()) {
+            throw std::invalid_argument(
+                "Activation input and upstream-gradient sizes must match."
+            );
+        }
+
+        Values result(pre_activations.size(), 0.0);
+
+        for (std::size_t i = 0; i < pre_activations.size(); ++i) {
+            const double input = pre_activations[i];
+            const double upstream = upstream_gradient[i];
+
+            if (!std::isfinite(input) || !std::isfinite(upstream)) {
+                throw std::invalid_argument(
+                    "Activation backward inputs must be finite."
+                );
+            }
+
+            const double local_derivative = derivative(input, parameter);
+            if (!std::isfinite(local_derivative)) {
+                throw std::runtime_error(
+                    "Activation derivative callback produced a non-finite value."
+                );
+            }
+
+            result[i] = local_derivative * upstream;
+            if (!std::isfinite(result[i])) {
+                throw std::overflow_error(
+                    "Activation backward result is not finite."
+                );
+            }
+        }
+
+        return result;
+    };
+
+    return activation;
+}
+
+namespace Activations {
+    const ActivationFunction Tanh = make_elementwise_activation(
+        "tanh",
+        [](double z, ActivationParameter) { return std::tanh(z); },
+        [](double z, ActivationParameter) {
+            const double value = std::tanh(z);
+            return 1.0 - value * value;
+        }
+    );
+
+    const ActivationFunction Linear = make_elementwise_activation(
+        "linear",
+        [](double z, ActivationParameter) { return z; },
+        [](double, ActivationParameter) { return 1.0; }
+    );
+
+    /// <summary>
+    /// Rectified Linear Unit Hidden Activation Function.
+    /// Implemented such that the subgradient value at z = 0 is 0
+    /// since the derivative is undefined at z = 0
+    /// (LHS limit and RHS limit are not equal.)
+    /// </summary>
+    const ActivationFunction ReLU = make_elementwise_activation(
+        "relu",
+        [](double z, ActivationParameter) { return std::max(0.0, z); },
+        [](double z, ActivationParameter) {
+            return z > 0.0 ? 1.0 : 0.0;
+        }
+    );
+
+    const ActivationFunction LeakyReLU = make_elementwise_activation(
+        "leaky_relu",
+        [](double z, ActivationParameter negative_slope) {
+            const double slope = negative_slope.value_or(0.01);
+            return z > 0.0 ? z : slope * z;
+        },
+        [](double z, ActivationParameter negative_slope) {
+            const double slope = negative_slope.value_or(0.01);
+            return z > 0.0 ? 1.0 : slope;
+        }
+    );
+
+    const ActivationFunction ELU = make_elementwise_activation(
+        "elu",
+        [](double z, ActivationParameter negative_coefficient) {
+            const double coefficient = negative_coefficient.value_or(1.0);
+            return z > 0.0
+                ? z
+                : coefficient * (std::exp(z) - 1.0);
+        },
+        [](double z, ActivationParameter negative_coefficient) {
+            const double coefficient = negative_coefficient.value_or(1.0);
+            return z > 0.0
+                ? 1.0
+                : coefficient * std::exp(z);
+        }
+    );
+
+    const ActivationFunction GELU = make_elementwise_activation(
+        "gelu",
+        [](double z, ActivationParameter) { return z * normalcdf(z); },
+        [](double z, ActivationParameter) {
+            return normalcdf(z) + z * normalpdf(z);
+        }
+    );
+
+    /// <summary>
+    /// Equivalent to swish(z) where beta (trainable parameter) = 1
+    /// </summary>
+    const ActivationFunction SiLU = make_elementwise_activation(
+        "silu",
+        [](double z, ActivationParameter) { return z * stable_sigmoid(z); },
+        [](double z, ActivationParameter) {
+            const double sigmoid = stable_sigmoid(z);
+            return sigmoid + z * sigmoid * (1.0 - sigmoid);
+        }
+    );
+
+    const ActivationFunction Mish = make_elementwise_activation(
+        "mish",
+        [](double z, ActivationParameter) {
+            return z * std::tanh(stable_softplus(z));
+        },
+        [](double z, ActivationParameter) {
+            const double exp_2z = std::exp(2.0 * z);
+            const double exp_z = std::exp(z);
+            const double delta =
+                4.0 * (z + 1.0) +
+                4.0 * exp_2z +
+                std::exp(3.0 * z) +
+                exp_z * (4.0 * z + 6.0);
+            const double omega = 2.0 * exp_z + exp_2z + 2.0;
+            return (exp_z * omega) / (delta * delta);
+        }
+    );
+
+    const ActivationFunction Sigmoid = make_elementwise_activation(
+        "sigmoid",
+        [](double z, ActivationParameter) { return stable_sigmoid(z); },
+        [](double z, ActivationParameter) {
+            const double sigmoid = stable_sigmoid(z);
+            return (1.0 - sigmoid) * sigmoid;
+        }
+    );
+}
+
+#pragma endregion
+
 #pragma region Network Validation and Construction
+
+namespace {
+    void validate_activation_descriptor(
+        const ActivationFunction& activation
+    )
+    {
+        if (activation.name.empty()) {
+            throw std::invalid_argument(
+                "Activation name must not be empty."
+            );
+        }
+
+        if (!activation.forward) {
+            throw std::invalid_argument(
+                "Activation must provide a forward callback."
+            );
+        }
+
+        if (!activation.backward) {
+            throw std::invalid_argument(
+                "Activation must provide a backward callback."
+            );
+        }
+    }
+
+    const ActivationFunction& effective_activation(
+        const MLP& network,
+        std::size_t layer_index
+    )
+    {
+        if (layer_index >= network.layers.size()) {
+            throw std::out_of_range("Invalid layer index.");
+        }
+        if (!network.layer_activations.empty()) {
+            return network.layer_activations[layer_index];
+        }
+
+        return layer_index + 1 == network.layers.size()
+            ? Activations::Sigmoid
+            : Activations::Tanh;
+    }
+}
 
 void validate_network_architecture(const std::vector<std::size_t>& layer_sizes)
 {
@@ -41,6 +304,19 @@ void validate_network_architecture(const std::vector<std::size_t>& layer_sizes)
 void validate_network(const MLP& network)
 {
     validate_network_architecture(network.layer_sizes);
+
+    if (!network.layer_activations.empty()) {
+        if (network.layer_activations.size() != network.layers.size()) {
+            throw std::invalid_argument(
+                "Activation count must match the dense-layer count."
+            );
+        }
+
+        for (const ActivationFunction& activation :
+            network.layer_activations) {
+            validate_activation_descriptor(activation);
+        }
+    }
 
     if (network.layers.size() + 1 != network.layer_sizes.size()) {
         throw std::invalid_argument("Number of layers does not match network architecture.");
@@ -100,7 +376,95 @@ MLP make_zero_network(std::vector<std::size_t> layer_sizes)
     return network;
 }
 
-MLP make_mlp(const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed)
+namespace {
+    void initialize_network_glorot(
+        MLP& network,
+        const std::vector<std::size_t>& layer_sizes,
+        std::uint32_t seed
+    );
+
+    void initialize_network_kaiming(
+        MLP& network,
+        const std::vector<std::size_t>& layer_sizes,
+        std::uint32_t seed
+    );
+
+    void initialize_network_lecunn(
+        MLP& network,
+        const std::vector<std::size_t>& layer_sizes,
+        std::uint32_t seed
+    );
+
+    void initialize_network_zero(
+        MLP& network,
+        const std::vector<std::size_t>& layer_sizes,
+        std::uint32_t seed
+    );
+}
+
+void initialize_network(
+    MLP& network,
+    const InitializationType initialization_type,
+    const std::vector<std::size_t>& layer_sizes,
+    const std::uint32_t seed
+)
+{
+    switch (initialization_type) {
+    case InitializationType::XavierGlorot:
+        initialize_network_glorot(network, layer_sizes, seed);
+        break;
+    case InitializationType::KaimingHe:
+        initialize_network_kaiming(network, layer_sizes, seed);
+        break;
+    case InitializationType::LeCunn:
+        initialize_network_lecunn(network, layer_sizes, seed);
+        break;
+    case InitializationType::Zero:
+        initialize_network_zero(network, layer_sizes, seed);
+        break;
+    default:
+        throw std::invalid_argument("Unknown initialization type.");
+    }
+}
+
+namespace {
+    void initialize_network_glorot(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
+        std::mt19937 rng(seed);
+
+        for (std::size_t i = 0; i + 1 < layer_sizes.size(); ++i) {
+            DenseLayer layer;
+            layer.input_size = layer_sizes[i];
+            layer.output_size = layer_sizes[i + 1];
+            const double limit = std::sqrt(
+                6.0 / static_cast<double>(layer.input_size + layer.output_size)
+            );
+
+            std::uniform_real_distribution<double> distribution(-limit, limit);
+
+            layer.weights.resize(layer.input_size * layer.output_size);
+
+            for (double& weight : layer.weights) {
+                weight = distribution(rng);
+            }
+
+            layer.biases.resize(layer.output_size, 0.0);
+
+            network.layers.push_back(layer);
+        }
+
+    }
+    void initialize_network_kaiming(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
+
+    }
+    void initialize_network_lecunn(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
+
+    }
+    void initialize_network_zero(MLP& network, const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed) {
+
+    }
+}
+
+MLP make_mlp(const std::vector<std::size_t>& layer_sizes, const std::uint32_t seed, InitializationType initialization_type)
 {
     validate_network_architecture(layer_sizes);
 
@@ -109,28 +473,15 @@ MLP make_mlp(const std::vector<std::size_t>& layer_sizes, const std::uint32_t se
     MLP network;
     network.layer_sizes = layer_sizes;
 
-    for (std::size_t i = 0; i + 1 < layer_sizes.size(); ++i) {
-        DenseLayer layer;
-        layer.input_size = layer_sizes[i];
-        layer.output_size = layer_sizes[i + 1];
+    initialize_network(network, initialization_type, layer_sizes, seed);
 
-        const double limit = std::sqrt(
-            6.0 / static_cast<double>(layer.input_size + layer.output_size)
-        );
+    validate_network(network);
+    return network;
+}
 
-        std::uniform_real_distribution<double> distribution(-limit, limit);
-
-        layer.weights.resize(layer.input_size * layer.output_size);
-
-        for (double& weight : layer.weights) {
-            weight = distribution(rng);
-        }
-
-        layer.biases.resize(layer.output_size, 0.0);
-
-        network.layers.push_back(layer);
-    }
-
+MLP make_mlp(const NetworkSpec& specification) {
+    MLP network = make_mlp(specification.layer_sizes, specification.seed, specification.initialization_type);
+    network.layer_activations = specification.layer_activations;
     validate_network(network);
     return network;
 }
@@ -170,34 +521,39 @@ ForwardCache forward_pass(const MLP& network, const Values& input)
     for (std::size_t layer_index = 0; layer_index < network.layers.size(); ++layer_index) {
         const DenseLayer& layer = network.layers[layer_index];
         const Values& previous_activation = cache.activations[layer_index];
-        const bool is_output_layer = layer_index + 1 == network.layers.size();
 
         Values pre_activation(layer.output_size, 0.0);
-        Values activation(layer.output_size, 0.0);
 
-        for (std::size_t output_index = 0; output_index < layer.output_size; ++output_index) {
-            double z = layer.biases[output_index];
+        for (std::size_t output_index = 0; output_index < layer.output_size; output_index++) {
+                double z = layer.biases[output_index];
 
-            for (std::size_t input_index = 0; input_index < layer.input_size; ++input_index) {
-                z += layer.weight(output_index, input_index) * previous_activation[input_index];
-            }
+                for (std::size_t input_index = 0; input_index < layer.input_size; ++input_index) {
+                    z += layer.weight(output_index, input_index) * previous_activation[input_index];
+                }
 
-            if (!std::isfinite(z)) {
-                throw std::runtime_error("Forward pass produced a non-finite pre-activation.");
-            }
+                if (!std::isfinite(z)) {
+                    throw std::runtime_error("Forward pass produced a non-finite pre-activation.");
+                }
 
-            pre_activation[output_index] = z;
+                pre_activation[output_index] = z;
+        }
+        cache.pre_activations.push_back(pre_activation);
 
-            const double a = is_output_layer ? stable_sigmoid(z) : std::tanh(z);
-
-            if (!std::isfinite(a)) {
-                throw std::runtime_error("Forward pass produced a non-finite activation.");
-            }
-
-            activation[output_index] = a;
+        const ActivationFunction& activation_function = effective_activation(network, layer_index);
+        Values activation = activation_function.forward(pre_activation);
+        if (activation.size() != layer.output_size) {
+            throw std::invalid_argument(
+                "Activation result size does not match layer output size."
+            );
         }
 
-        cache.pre_activations.push_back(pre_activation);
+        for (const double value : activation) {
+            if (!std::isfinite(value)) {
+                throw std::runtime_error(
+                    "Activation result must be finite."
+                );
+            }
+        }
         cache.activations.push_back(activation);
     }
 
@@ -358,63 +714,12 @@ void validate_backward_inputs(const MLP& network, const ForwardCache& cache, con
 #pragma region Backward Propagation
 
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target) {
-    validate_backward_inputs(network, cache, target);
-    NetworkGradients gradients = make_zero_gradients_like(network);
-
-    std::vector<Values> deltas;
-    deltas.reserve(network.layers.size());
-    for (const DenseLayer& layer : network.layers) {
-        deltas.emplace_back(layer.output_size, 0.0);
-    }
-
-    const std::size_t output_layer_index = network.layers.size() - 1;
-    const std::size_t output_width = network.layers[output_layer_index].output_size;
-    const Values& output_activation = cache.activations[output_layer_index + 1];
-
-    for (std::size_t j = 0; j < output_width; ++j) {
-        deltas[output_layer_index][j] =
-            (output_activation[j] - target[j]) / static_cast<double>(output_width);
-    }
-
-    for (std::size_t next_layer_index = output_layer_index;
-         next_layer_index > 0;
-         --next_layer_index) {
-        const std::size_t layer_index = next_layer_index - 1;
-        const DenseLayer& layer = network.layers[layer_index];
-        const DenseLayer& next_layer = network.layers[next_layer_index];
-        const Values& activation = cache.activations[layer_index + 1];
-
-        for (std::size_t j = 0; j < layer.output_size; ++j) {
-            double transported_delta = 0.0;
-
-            for (std::size_t r = 0; r < next_layer.output_size; ++r) {
-                transported_delta +=
-                    next_layer.weight(r, j) * deltas[next_layer_index][r];
-            }
-
-            const double tanh_derivative = 1.0 - activation[j] * activation[j];
-            deltas[layer_index][j] = transported_delta * tanh_derivative;
-        }
-    }
-
-    for (std::size_t layer_index = 0;
-         layer_index < network.layers.size();
-         ++layer_index) {
-        const DenseLayer& layer = network.layers[layer_index];
-        const Values& previous_activation = cache.activations[layer_index];
-        LayerGradients& layer_gradients = gradients.layers[layer_index];
-
-        for (std::size_t j = 0; j < layer.output_size; ++j) {
-            layer_gradients.biases[j] = deltas[layer_index][j];
-
-            for (std::size_t i = 0; i < layer.input_size; ++i) {
-                layer_gradients.weights[j * layer.input_size + i] =
-                    deltas[layer_index][j] * previous_activation[i];
-            }
-        }
-    }
-
-    return gradients;
+        return backward(
+            network,
+            cache,
+            target,
+            make_binary_cross_entropy_objective()
+        );
 }
 
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective) {
@@ -461,17 +766,43 @@ NetworkGradients backward(const MLP& network, const ForwardCache& cache, const V
         const std::size_t layer_index = next_layer_index - 1;
         const DenseLayer& layer = network.layers[layer_index];
         const DenseLayer& next_layer = network.layers[next_layer_index];
-        const Values& activation = cache.activations[layer_index + 1];
+
+        Values transported_grad(layer.output_size, 0.0);
 
         for (std::size_t j = 0; j < layer.output_size; ++j) {
-            double transported_delta = 0.0;
             for (std::size_t r = 0; r < next_layer.output_size; ++r) {
-                transported_delta += next_layer.weight(r,j) * deltas[next_layer_index][r];
+                transported_grad[j] += next_layer.weight(r, j) * deltas[next_layer_index][r];
             }
-
-            const double tanh_derivative = 1.0 - activation[j] * activation[j];
-            deltas[layer_index][j] = transported_delta * tanh_derivative;
         }
+        for (const double value : transported_grad) {
+            if (!std::isfinite(value)) {
+                throw std::overflow_error(
+                    "Transported gradient is not finite."
+                );
+            }
+        }
+        const ActivationFunction& activation_function = effective_activation(network, layer_index);
+        Values hidden_delta =
+            activation_function.backward(
+                cache.pre_activations[layer_index],
+                transported_grad
+            );
+
+        if (hidden_delta.size() != layer.output_size) {
+            throw std::invalid_argument(
+                "Activation backward result size does not match layer output size."
+            );
+        }
+
+        for (const double value : hidden_delta) {
+            if (!std::isfinite(value)) {
+                throw std::runtime_error(
+                    "Activation backward result must be finite."
+                );
+            }
+        }
+
+        deltas[layer_index] = std::move(hidden_delta);
     }
 
     for (std::size_t layer_index = 0; layer_index < network.layers.size(); ++layer_index) {
@@ -493,37 +824,11 @@ NetworkGradients backward(const MLP& network, const ForwardCache& cache, const V
 }
 
 NetworkGradients batch_gradients(const MLP& network, const Dataset& batch) {
-    if (batch.empty()) {
-        throw std::invalid_argument("Batch must not be empty.");
-	}
-    validate_network(network);
-
-    NetworkGradients averaged = make_zero_gradients_like(network);
-    
-    for (const Sample& sample : batch) {
-        const ForwardCache cache = forward_pass(network, sample.input);
-        const NetworkGradients sample_gradients = backward(network, cache, sample.target);
-
-        for (std::size_t layer_index = 0; layer_index < averaged.layers.size(); layer_index++) {
-            for (std::size_t k = 0; k < averaged.layers[layer_index].weights.size(); ++k) {
-                averaged.layers[layer_index].weights[k] += sample_gradients.layers[layer_index].weights[k];
-            }
-            for (std::size_t j = 0; j < averaged.layers[layer_index].biases.size(); ++j) {
-                averaged.layers[layer_index].biases[j] += sample_gradients.layers[layer_index].biases[j];
-            }
-        }
-    }
-
-    for (std::size_t layer_index = 0; layer_index < averaged.layers.size(); layer_index++) {
-        for (std::size_t j = 0; j < averaged.layers[layer_index].biases.size(); j++) {
-            averaged.layers[layer_index].biases[j] /= static_cast<double>(batch.size());
-        }
-        for (std::size_t k = 0; k < averaged.layers[layer_index].weights.size(); k++) {
-            averaged.layers[layer_index].weights[k] /= static_cast<double>(batch.size());
-        }
-	}
-
-    return averaged;
+    return batch_gradients(
+        network,
+        batch,
+        make_binary_cross_entropy_objective()
+    );
 }
 
 NetworkGradients batch_gradients(const MLP& network, const Dataset& batch, const ObjectiveFunctions& objective) {
