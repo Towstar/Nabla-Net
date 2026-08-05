@@ -1,5 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "objective_functions.hpp"
 
 enum class OptimizerRequirement {
@@ -24,6 +31,7 @@ public:
     virtual TrainingStepResult step(OptimizerContext& context) = 0;
 };
 
+// stores a function that creates a new optimizer instance
 using OptimizerFactory = std::function<std::unique_ptr<Optimizer>()>;
 
 struct OptimizerSpec {
@@ -33,6 +41,21 @@ struct OptimizerSpec {
     };
     OptimizerFactory make;
 };
+
+using LearningRateSchedule =
+std::function<double(std::size_t update_index)>;
+
+struct SGDOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {
+            return 0.01;
+        }
+    };
+};
+
+OptimizerSpec make_sgd(
+    SGDOptions options = {}
+);
 
 namespace Optimizers {
     extern const OptimizerSpec SGD;
@@ -45,10 +68,10 @@ namespace Optimizers {
 
 struct TrainingConfig {
     std::size_t epochs{ 1 };
-    std::size_t batch_size{}; // zero means full-dataset batches
+    std::size_t batch_size{};
     bool shuffle{ false };
     std::uint32_t shuffle_seed{ 0 };
-    double gradient_tolerance{}; // zero means disabled
+    double gradient_tolerance{};
 };
 
 struct TrainingReport {

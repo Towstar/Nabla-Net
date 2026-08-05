@@ -9,6 +9,8 @@
 #include <format>
 #include <stdexcept>
 
+#pragma region Dense Layer Accessors
+
 double& DenseLayer::weight(const std::size_t output_index, const std::size_t input_index)
 {
     return weights[output_index * input_size + input_index];
@@ -18,6 +20,10 @@ const double& DenseLayer::weight(const std::size_t output_index, const std::size
 {
     return weights[output_index * input_size + input_index];
 }
+
+#pragma endregion
+
+#pragma region Network Validation and Construction
 
 void validate_network_architecture(const std::vector<std::size_t>& layer_sizes)
 {
@@ -129,6 +135,10 @@ MLP make_mlp(const std::vector<std::size_t>& layer_sizes, const std::uint32_t se
     return network;
 }
 
+#pragma endregion
+
+#pragma region Forward Propagation
+
 double stable_sigmoid(double x)
 {
     if (x < 0.0) {
@@ -139,7 +149,6 @@ double stable_sigmoid(double x)
     const double e = std::exp(-x);
     return 1.0 / (1.0 + e);
 }
-
 
 ForwardCache forward_pass(const MLP& network, const Values& input)
 {
@@ -195,18 +204,9 @@ ForwardCache forward_pass(const MLP& network, const Values& input)
     return cache;
 }
 
-/// <summary>
-/// Cost Function: Binary Cross-Entropy (BCE) from Logits, modified to be more numerically stable.
-/// </summary>
-/// <param name="logit"></param>
-/// <param name="target"></param>
-/// <returns></returns>
+#pragma endregion
 
-
-
-
-
-
+#pragma region Gradient Storage and Input Validation
 
 NetworkGradients make_zero_gradients_like(const MLP& network) {
 	validate_network(network);
@@ -225,7 +225,6 @@ NetworkGradients make_zero_gradients_like(const MLP& network) {
 	}
     return gradients;
 }
-
 
 void validate_backward_inputs(const MLP& network, const ForwardCache& cache, const Values& target)
 {
@@ -353,6 +352,10 @@ void validate_backward_inputs(const MLP& network, const ForwardCache& cache, con
         }
     }
 }
+
+#pragma endregion
+
+#pragma region Backward Propagation
 
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target) {
     validate_backward_inputs(network, cache, target);
@@ -558,6 +561,10 @@ NetworkGradients batch_gradients(const MLP& network, const Dataset& batch, const
     return averaged;
 }
 
+#pragma endregion
+
+#pragma region Gradient Diagnostics and Updates
+
 double gradient_l2_norm(const NetworkGradients& gradients) {
     double sum_of_squares = 0.0;
 
@@ -696,3 +703,5 @@ void apply_gradient(MLP& network, const NetworkGradients& gradients, const doubl
 
 	network = candidate;
 }
+
+#pragma endregion

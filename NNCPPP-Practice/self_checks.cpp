@@ -801,6 +801,466 @@ void run_objective_checks()
     std::cout << "[PASS] objective callback contract\n";
 }
 
+void run_mse_objective_checks()
+{
+    const ObjectiveFunctions mse = make_mean_squared_error_objective();
+    validate_objective_functions(mse);
+
+    // Convention under test:
+    //
+    //     loss = (1 / output_width) * sum((logit - target)^2)
+    //     d_loss/d_logit = 2 * (logit - target) / output_width
+    //
+    // The callbacks receive output logits. MSE must not apply sigmoid here.
+    const Values logits{ 1.0, -1.0 };
+    const Values targets{ 0.5, 0.0 };
+
+    require_near(
+        mse.sample_loss(logits, targets),
+        0.625,
+        1e-12,
+        "MSE objective should compute the documented mean-squared loss"
+    );
+
+    const Values gradient = mse.sample_loss_gradient(logits, targets);
+    require(gradient.size() == logits.size(),
+        "MSE objective gradient should match the output width");
+    require_near(
+        gradient[0],
+        0.5,
+        1e-12,
+        "MSE objective gradient should use the first residual and width scaling"
+    );
+    require_near(
+        gradient[1],
+        -1.0,
+        1e-12,
+        "MSE objective gradient should preserve the second residual sign"
+    );
+
+    require_near(
+        mse.sample_loss({ 2.0 }, { 2.0 }),
+        0.0,
+        1e-12,
+        "MSE objective should be zero when logits equal targets"
+    );
+
+    const Values zero_gradient = mse.sample_loss_gradient({ 2.0 }, { 2.0 });
+    require(zero_gradient.size() == 1,
+        "MSE one-output gradient should contain one value");
+    require_near(
+        zero_gradient[0],
+        0.0,
+        1e-12,
+        "MSE objective gradient should be zero when logits equal targets"
+    );
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss({}, {}));
+    }, "MSE loss should reject empty vectors");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss_gradient({}, {}));
+    }, "MSE gradient should reject empty vectors");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss({ 1.0 }, { 1.0, 2.0 }));
+    }, "MSE loss should reject mismatched vector sizes");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss_gradient(
+            { 1.0 },
+            { 1.0, 2.0 }
+        ));
+    }, "MSE gradient should reject mismatched vector sizes");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss(
+            { std::numeric_limits<double>::quiet_NaN() },
+            { 0.0 }
+        ));
+    }, "MSE loss should reject NaN logits");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss_gradient(
+            { std::numeric_limits<double>::infinity() },
+            { 0.0 }
+        ));
+    }, "MSE gradient should reject infinite logits");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss(
+            { 0.0 },
+            { std::numeric_limits<double>::quiet_NaN() }
+        ));
+    }, "MSE loss should reject NaN targets");
+
+    require_throws([] {
+        const ObjectiveFunctions objective = make_mean_squared_error_objective();
+        static_cast<void>(objective.sample_loss_gradient(
+            { 0.0 },
+            { -std::numeric_limits<double>::infinity() }
+        ));
+    }, "MSE gradient should reject infinite targets");
+
+    MLP configured_network = make_zero_network({ 1, 2 });
+    configured_network.layers[0].biases = { 1.0, -1.0 };
+    const ForwardCache cache = forward_pass(configured_network, { 0.0 });
+
+    require_near(
+        sample_cost(configured_network, cache, targets, mse),
+        0.625,
+        1e-12,
+        "MSE sample cost should evaluate the cache's output logits"
+    );
+
+    const Dataset batch{
+        { { 0.0 }, { 0.5, 0.0 } },
+        { { 0.0 }, { 1.0, -1.0 } }
+    };
+    require_near(
+        batch_loss(configured_network, batch, mse),
+        0.3125,
+        1e-12,
+        "MSE batch loss should average sample losses"
+    );
+
+    const NetworkGradients backward_gradients = backward(
+        configured_network,
+        cache,
+        targets,
+        mse
+    );
+    require_near(
+        backward_gradients.layers[0].biases[0],
+        0.5,
+        1e-12,
+        "MSE backward should use the first output-logit derivative"
+    );
+    require_near(
+        backward_gradients.layers[0].biases[1],
+        -1.0,
+        1e-12,
+        "MSE backward should use the second output-logit derivative"
+    );
+
+    std::cout << "[PASS] MSE objective value, gradient, validation, and integration\n";
+}
+
+void run_sgd_optimizer_checks()
+{
+    MLP network = make_zero_network({ 1, 1 });
+    network.layers[0].weights = { 0.5 };
+    network.layers[0].biases = { 0.25 };
+
+    const Dataset batch{
+        { { 1.0 }, { 0.0 } }
+    };
+    const ObjectiveConfig objective = make_objective_config(
+        make_mean_squared_error_objective()
+    );
+
+    NetworkGradients gradient = make_zero_gradients_like(network);
+    gradient.layers[0].weights[0] = 0.2;
+    gradient.layers[0].biases[0] = 0.6;
+
+    std::vector<std::size_t> observed_schedule_steps;
+    SGDOptions options;
+    options.learning_rate_schedule =
+        [&observed_schedule_steps](const std::size_t update_index) {
+            observed_schedule_steps.push_back(update_index);
+            return update_index == 0 ? 0.5 : 0.25;
+        };
+
+    const OptimizerSpec configured_sgd = make_sgd(options);
+    validate_optimizer_spec(configured_sgd);
+
+    std::unique_ptr<Optimizer> optimizer = configured_sgd.make();
+    require(optimizer != nullptr,
+        "configured SGD factory should create an optimizer");
+    require(std::string(optimizer->name()) == "SGD",
+        "configured SGD should report its name");
+
+    optimizer->reset(network);
+
+    const double first_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext first_context{
+        network,
+        batch,
+        objective,
+        first_loss,
+        gradient
+    };
+
+    const TrainingStepResult first_result =
+        optimizer->step(first_context);
+
+    require(first_result.updated,
+        "SGD should report a successful update");
+    require_near(first_result.previous_loss, first_loss, 1e-12,
+        "SGD should preserve the supplied previous loss");
+    require_near(first_result.gradient_norm, std::sqrt(0.4), 1e-12,
+        "SGD should report the current gradient norm");
+    require_near(network.layers[0].weights[0], 0.4, 1e-12,
+        "SGD should update weights using the scheduled learning rate");
+    require_near(network.layers[0].biases[0], -0.05, 1e-12,
+        "SGD should update biases using the scheduled learning rate");
+    require_near(first_result.new_loss, 0.1225, 1e-12,
+        "SGD should report the post-update objective loss");
+
+    const double second_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext second_context{
+        network,
+        batch,
+        objective,
+        second_loss,
+        gradient
+    };
+    static_cast<void>(optimizer->step(second_context));
+
+    require_near(network.layers[0].weights[0], 0.35, 1e-12,
+        "SGD should use the schedule's second update rate");
+    require_near(network.layers[0].biases[0], -0.2, 1e-12,
+        "SGD should schedule bias updates consistently");
+
+    optimizer->reset(network);
+    const double reset_loss = objective_loss(network, batch, objective);
+    OptimizerContext reset_context{
+        network,
+        batch,
+        objective,
+        reset_loss,
+        gradient
+    };
+    static_cast<void>(optimizer->step(reset_context));
+
+    require(observed_schedule_steps.size() == 3,
+        "SGD should evaluate the schedule once per update");
+    require(observed_schedule_steps[0] == 0 &&
+            observed_schedule_steps[1] == 1 &&
+            observed_schedule_steps[2] == 0,
+        "SGD reset should restart the schedule at update zero");
+
+    SGDOptions empty_schedule;
+    empty_schedule.learning_rate_schedule = {};
+    require_throws([&empty_schedule] {
+        static_cast<void>(make_sgd(empty_schedule));
+    }, "SGD should reject an empty learning-rate schedule");
+
+    SGDOptions invalid_schedule;
+    invalid_schedule.learning_rate_schedule = [](std::size_t) {
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    const OptimizerSpec invalid_sgd = make_sgd(invalid_schedule);
+    std::unique_ptr<Optimizer> invalid_optimizer = invalid_sgd.make();
+    invalid_optimizer->reset(network);
+
+    const MLP before_invalid_step = network;
+    const double invalid_step_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext invalid_context{
+        network,
+        batch,
+        objective,
+        invalid_step_loss,
+        gradient
+    };
+
+    require_throws([&invalid_optimizer, &invalid_context] {
+        static_cast<void>(invalid_optimizer->step(invalid_context));
+    }, "SGD should reject a non-finite scheduled learning rate");
+    require(same_parameters(network, before_invalid_step),
+        "invalid SGD schedules should not mutate the network");
+
+    std::cout << "[PASS] configurable SGD and learning-rate schedules\n";
+}
+
+void run_regularization_coefficient_checks()
+{
+    const MLP network = make_zero_network({ 1, 1 });
+
+    RegularizationTerm custom;
+    custom.name = "coefficient contract";
+    custom.value = [](const MLP&) {
+        return 2.0;
+    };
+    custom.add_gradient = [](const MLP& network, NetworkGradients& gradients) {
+        for (std::size_t layer_index = 0;
+             layer_index < network.layers.size();
+             ++layer_index) {
+            for (double& value : gradients.layers[layer_index].weights) {
+                value += 3.0;
+            }
+            for (double& value : gradients.layers[layer_index].biases) {
+                value += 3.0;
+            }
+        }
+    };
+    custom.smooth = true;
+    custom.coefficient = 0.5;
+
+    const ObjectiveConfig custom_config = make_objective_config(
+        make_binary_cross_entropy_objective(),
+        { custom }
+    );
+
+    require_near(
+        regularization_loss(network, custom_config),
+        1.0,
+        1e-12,
+        "regularization loss should apply the coefficient exactly once"
+    );
+
+    NetworkGradients combined = make_zero_gradients_like(network);
+    combined.layers[0].weights[0] = 1.0;
+    combined.layers[0].biases[0] = 1.0;
+
+    add_regularization_gradients(network, custom_config, combined);
+
+    require_near(
+        combined.layers[0].weights[0],
+        2.5,
+        1e-12,
+        "regularization gradient should preserve data gradients and scale only the regularizer"
+    );
+    require_near(
+        combined.layers[0].biases[0],
+        2.5,
+        1e-12,
+        "regularization bias gradient should preserve data gradients and scale only the regularizer"
+    );
+
+    MLP regularized_network = make_zero_network({ 2, 1 });
+    regularized_network.layers[0].weights = { 2.0, -3.0 };
+    regularized_network.layers[0].biases = { 4.0 };
+
+    const RegularizationTerm l2 = make_l2_regularization(0.1);
+    require(l2.smooth,
+        "L2 regularization should be marked smooth");
+    require(!l2.includes_biases,
+        "L2 regularization should exclude biases by default");
+    require_near(
+        l2.value(regularized_network),
+        13.0,
+        1e-12,
+        "L2 value callback should return the unscaled sum of squares"
+    );
+
+    NetworkGradients l2_unscaled =
+        make_zero_gradients_like(regularized_network);
+    l2.add_gradient(regularized_network, l2_unscaled);
+    require_near(
+        l2_unscaled.layers[0].weights[0],
+        4.0,
+        1e-12,
+        "L2 callback should return the unscaled derivative for the first weight"
+    );
+    require_near(
+        l2_unscaled.layers[0].weights[1],
+        -6.0,
+        1e-12,
+        "L2 callback should return the unscaled derivative for the second weight"
+    );
+    require_near(
+        l2_unscaled.layers[0].biases[0],
+        0.0,
+        1e-12,
+        "L2 callback should exclude biases by default"
+    );
+
+    const ObjectiveConfig l2_config = make_objective_config(
+        make_binary_cross_entropy_objective(),
+        { l2 }
+    );
+    require_near(
+        regularization_loss(regularized_network, l2_config),
+        1.3,
+        1e-12,
+        "L2 objective loss should apply the coefficient once"
+    );
+
+    const RegularizationTerm l1 = make_l1_regularization(
+        0.1,
+        false,
+        L1Method::Subgradient
+    );
+    require(!l1.smooth,
+        "L1 subgradient regularization should be marked nonsmooth");
+    require(!l1.includes_biases,
+        "L1 regularization should exclude biases by default");
+    require_near(
+        l1.value(regularized_network),
+        5.0,
+        1e-12,
+        "L1 value callback should return the unscaled sum of absolute values"
+    );
+
+    NetworkGradients l1_unscaled =
+        make_zero_gradients_like(regularized_network);
+    l1.add_gradient(regularized_network, l1_unscaled);
+    require_near(
+        l1_unscaled.layers[0].weights[0],
+        1.0,
+        1e-12,
+        "L1 callback should return the positive sign subgradient"
+    );
+    require_near(
+        l1_unscaled.layers[0].weights[1],
+        -1.0,
+        1e-12,
+        "L1 callback should return the negative sign subgradient"
+    );
+    require_near(
+        l1_unscaled.layers[0].biases[0],
+        0.0,
+        1e-12,
+        "L1 callback should exclude biases by default"
+    );
+
+    const RegularizationTerm l1_with_biases = make_l1_regularization(
+        0.1,
+        true,
+        L1Method::Subgradient
+    );
+    require(l1_with_biases.includes_biases,
+        "L1 regularization should preserve the bias-inclusion setting");
+    require_near(
+        l1_with_biases.value(regularized_network),
+        9.0,
+        1e-12,
+        "L1 bias-inclusive value should include the bias magnitude"
+    );
+
+    require_throws([] {
+        static_cast<void>(make_l2_regularization(-0.1));
+    }, "L2 regularization should reject negative coefficients");
+    require_throws([] {
+        static_cast<void>(make_l1_regularization(
+            std::numeric_limits<double>::quiet_NaN()
+        ));
+    }, "L1 regularization should reject NaN coefficients");
+
+    std::cout << "[PASS] centralized regularization coefficients and L1/L2 contracts\n";
+}
+
 void require_zero_gradient_layout(
     const MLP& network,
     const NetworkGradients& gradients
@@ -2310,9 +2770,55 @@ void phase_one_objective_config_skeleton()
 
 void phase_one_regularization_skeleton()
 {
-    // TODO: verify L2 loss and gradients, then L1 subgradients and Elastic Net.
-    // TODO: verify that regularization is added once per objective evaluation,
-    // rather than once per sample or divided by batch size.
+    // The include_biases argument in each regularization factory controls the
+    // parameter set being regularized:
+    //
+    //   false (the default): regularize weights only;
+    //   true:                regularize weights and biases.
+    //
+    // The RegularizationTerm::includes_biases metadata should mirror that
+    // choice. The const on the current bool value parameter only prevents
+    // reassigning the local copy inside the factory; it does not change the
+    // caller's value or make the setting immutable after construction.
+
+    // Suggested shared fixture:
+    //   MLP network = make_zero_network({ 2, 2, 1 });
+    //   assign distinct finite nonzero weights and biases to every layer;
+    //   NetworkGradients gradients = make_zero_gradients_like(network);
+    //
+    // L2 skeleton:
+    //   - make_l2_regularization(coefficient, false) has the expected name,
+    //     smooth=true, includes_biases=false, and coefficient metadata.
+    //   - Its value callback includes weights but excludes biases.
+    //   - Its gradient callback adds the unscaled weight derivative and leaves
+    //     bias gradients unchanged; aggregation applies the coefficient.
+    //   - Repeat with include_biases=true and verify bias loss/gradients.
+    //   - Reject negative, NaN, and infinite coefficients.
+
+    // L1 skeleton:
+    //   - smooth=false and the include_biases metadata is preserved.
+    //   - Verify sign-subgradient behavior for negative, positive, and zero
+    //     parameters; the derivative at exactly zero is defined as zero.
+    //   - Verify weights-only and weights-plus-biases variants.
+    //   - Reject negative, NaN, and infinite coefficients.
+
+    // Elastic Net skeleton:
+    //   - Store and validate both nonnegative coefficients.
+    //   - Verify value equals the L1 contribution plus the L2 contribution.
+    //   - Verify gradient equals the corresponding sum of subgradients.
+    //   - Mark the combined term nonsmooth because it contains L1.
+    //   - Verify include_biases behavior for both components.
+
+    // Composition/contract skeleton:
+    //   - make_objective_config stores the data objective and regularizers.
+    //   - validate_objective_config rejects missing callbacks, missing
+    //     regularization callbacks, empty names, invalid coefficients, and
+    //     malformed callback results.
+    //   - regularization_loss is added once after batch data loss averaging,
+    //     not once per sample and not divided by batch size.
+    //   - add_regularization_gradients adds each regularizer once while
+    //     preserving the network-gradient shape and finite-value contract.
+    //   - objective_loss and objective_gradients agree with those components.
 }
 
 void phase_one_optimizer_spec_skeleton()
@@ -2435,17 +2941,8 @@ void phase_one_training_config_skeleton()
 
 void run_phase_one_stub_checks()
 {
-    require_throws([] {
-        static_cast<void>(make_objective_config());
-    }, "make_objective_config should remain an explicit exercise stub");
-
-    require_throws([] {
-        static_cast<void>(make_l2_regularization(0.1));
-    }, "L2 regularization should remain an explicit exercise stub");
-
-    require_throws([] {
-        static_cast<void>(make_l1_regularization(0.1));
-    }, "L1 regularization should remain an explicit exercise stub");
+    const ObjectiveConfig default_objective = make_objective_config();
+    validate_objective_config(default_objective);
 
     require_throws([] {
         static_cast<void>(make_elastic_net_regularization(0.1, 0.1));
@@ -2498,12 +2995,16 @@ void run_phase_one_stub_checks()
     phase_one_optimizer_spec_skeleton();
     phase_one_training_config_skeleton();
 
-    require_throws([] {
-        validate_optimizer_spec(Optimizers::SGD);
-    }, "unimplemented built-in optimizer factories should be rejected");
+    validate_optimizer_spec(Optimizers::SGD);
+    require(static_cast<bool>(Optimizers::SGD.make),
+        "implemented SGD should expose a factory");
 
-    require(!Optimizers::SGD.make,
-        "SGD exercise spec should expose an empty factory until implemented");
+    std::unique_ptr<Optimizer> sgd = Optimizers::SGD.make();
+    require(sgd != nullptr,
+        "built-in SGD factory should create an optimizer");
+    require(std::string(sgd->name()) == "SGD",
+        "built-in SGD should report its name");
+
     require(!Optimizers::AdaGrad.make,
         "AdaGrad exercise spec should expose an empty factory until implemented");
     require(!Optimizers::RMSProp.make,
@@ -2530,6 +3031,9 @@ void run_all_self_checks()
     run_sample_cost_checks();
     run_batch_loss_checks();
     run_objective_checks();
+    run_mse_objective_checks();
+    run_sgd_optimizer_checks();
+    run_regularization_coefficient_checks();
     run_zero_gradient_checks();
     run_backward_checks();
     run_objective_backward_checks();

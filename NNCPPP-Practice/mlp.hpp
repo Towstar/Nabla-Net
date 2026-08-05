@@ -112,6 +112,8 @@ struct TrainingStepResult {
 
 struct RegularizationTerm {
     std::string name;
+    // Callbacks return the unscaled penalty and unscaled gradient. The
+    // objective aggregation layer applies coefficient exactly once.
     std::function<double(const MLP&)> value;
     std::function<void(const MLP&, NetworkGradients&)> add_gradient;
     bool smooth{ true };

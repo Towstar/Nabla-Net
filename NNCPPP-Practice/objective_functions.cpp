@@ -6,7 +6,20 @@
 #include <stdexcept>
 #include <utility>
 
-// Binary cross-entropy objective
+/*
+This file contains objectives, loss functions, and regularization terms for training MLPs. 
+Each objective is represented by a pair of functions: 
+    one for computing the loss
+    one for computing the gradient of the loss with respect to the network's output logits.
+*/
+
+#pragma region Binary Cross-Entropy Objective
+/// <summary>
+/// Cost Function: Binary Cross-Entropy (BCE) from Logits, modified to be more numerically stable.
+/// </summary>
+/// <param name="logit"></param>
+/// <param name="target"></param>
+/// <returns></returns>
 double binary_cross_entropy_from_logit(double logit, double target) {
     if (!std::isfinite(logit))
         throw std::invalid_argument("Logit value must be finite.");
@@ -93,9 +106,9 @@ ObjectiveFunctions make_binary_cross_entropy_objective()
 
     return objective;
 }
+#pragma endregion
 
-
-// Softmax and categorical cross-entropy objective
+#pragma region Softmax Cross-Entropy Objective
 Values stable_softmax(const Values& logits) {
     if (logits.empty()) {
         throw std::invalid_argument("Logits vector must not be empty.");
@@ -263,166 +276,93 @@ ObjectiveFunctions make_softmax_cross_entropy_objective() {
 
     return objective;
 }
+#pragma endregion
 
+#pragma region Mean Squared Error Objective
+double mean_squared_error_from_logits(const Values& logits, const Values& targets) {
+    if (logits.empty()) {
+        throw std::invalid_argument("Logits vector must not be empty.");
+    }
+    for (const double logit : logits) {
+        if (!std::isfinite(logit)) {
+            throw std::invalid_argument("Logits must be finite.");
+        }
+    }
 
-// Mean squared error objective
-// (Not Complete Yet)
+    if (targets.size() != logits.size()) {
+        throw std::invalid_argument(
+            "Logits and targets must have the same size."
+        );
+	}
+
+    return std::inner_product(
+        logits.begin(), logits.end(),
+        targets.begin(), 0.0,
+        std::plus<double>(),
+        [](double logit, double target) {
+            if (!std::isfinite(target)) {
+                throw std::invalid_argument("Targets must be finite.");
+            }
+            double diff = logit - target;
+            return diff * diff;
+        }
+	) / static_cast<double>(logits.size());
+}
+
 ObjectiveFunctions make_mean_squared_error_objective() {
-    throw std::logic_error("Not Implemented");
     ObjectiveFunctions objective;
 
-    objective.sample_loss = [](const Values& logit, const Values& target)
-        {
-            double average = 0.0;
-            if (logit.empty() || target.empty())
-                throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
-            if (logit.size() != target.size())
-                throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
-
-            for (int i = 0; i < logit.size(); i++) {
-                if (!std::isfinite(target[i]) ||
-                    target[i] < 0.0 ||
-                    target[i] > 1.0) {
-                    throw std::invalid_argument(
-                        "Targets must be finite and in the range [0,1]."
-                    );
-                }
-                double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
-                if (!std::isfinite(acx_term))
-                    throw std::invalid_argument("Argument must be finite");
-                double sum = average + acx_term;
-                if (!std::isfinite(sum))
-                    throw std::invalid_argument("Argument must be finite");
-                average = sum;
-            }
-            return average;
+    objective.sample_loss =
+        [](const Values& logits, const Values& targets) {
+        return mean_squared_error_from_logits(logits, targets);
         };
-
     objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
         if (logits.empty() || targets.empty()) {
             throw std::invalid_argument(
                 "Logits and targets must contain at least one value."
             );
         }
-
         if (logits.size() != targets.size()) {
             throw std::invalid_argument(
                 "Logits and targets must have matching sizes."
             );
         }
-
         Values gradient(logits.size(), 0.0);
         const double output_width = static_cast<double>(logits.size());
-
         for (std::size_t i = 0; i < logits.size(); ++i) {
             if (!std::isfinite(logits[i])) {
                 throw std::invalid_argument("Logits must be finite.");
             }
-
-            if (!std::isfinite(targets[i]) ||
-                targets[i] < 0.0 ||
-                targets[i] > 1.0) {
-                throw std::invalid_argument(
-                    "Targets must be finite and in the range [0,1]."
-                );
+            if (!std::isfinite(targets[i])) {
+                throw std::invalid_argument("Targets must be finite.");
             }
-
-            gradient[i] =
-                (stable_sigmoid(logits[i]) - targets[i]) / output_width;
-
+            gradient[i] = (2.0 * (logits[i] - targets[i])) / output_width;
             if (!std::isfinite(gradient[i])) {
                 throw std::runtime_error(
-                    "BCE loss gradient produced a non-finite value."
+                    "MSE loss gradient produced a non-finite value."
                 );
             }
         }
-
         return gradient;
-        };
+		};
 
     return objective;
 }
+#pragma endregion
 
-// Mean squared error objective
-// (Not Complete Yet)
+#pragma region Exponential Objective
 ObjectiveFunctions make_exponential_objective() {
     throw std::logic_error("Not Implemented");
-    ObjectiveFunctions objective;
-
-    objective.sample_loss = [](const Values& logit, const Values& target)
-        {
-            double average = 0.0;
-            if (logit.empty() || target.empty())
-                throw std::invalid_argument("Logit size and Target Size must be greater than zero.");
-            if (logit.size() != target.size())
-                throw std::invalid_argument("Logit Size Must be Same Size as Target Size");
-
-            for (int i = 0; i < logit.size(); i++) {
-                if (!std::isfinite(target[i]) ||
-                    target[i] < 0.0 ||
-                    target[i] > 1.0) {
-                    throw std::invalid_argument(
-                        "Targets must be finite and in the range [0,1]."
-                    );
-                }
-                double acx_term = (binary_cross_entropy_from_logit(logit[i], target[i])) / logit.size();
-                if (!std::isfinite(acx_term))
-                    throw std::invalid_argument("Argument must be finite");
-                double sum = average + acx_term;
-                if (!std::isfinite(sum))
-                    throw std::invalid_argument("Argument must be finite");
-                average = sum;
-            }
-            return average;
-        };
-
-    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
-        if (logits.empty() || targets.empty()) {
-            throw std::invalid_argument(
-                "Logits and targets must contain at least one value."
-            );
-        }
-
-        if (logits.size() != targets.size()) {
-            throw std::invalid_argument(
-                "Logits and targets must have matching sizes."
-            );
-        }
-
-        Values gradient(logits.size(), 0.0);
-        const double output_width = static_cast<double>(logits.size());
-
-        for (std::size_t i = 0; i < logits.size(); ++i) {
-            if (!std::isfinite(logits[i])) {
-                throw std::invalid_argument("Logits must be finite.");
-            }
-
-            if (!std::isfinite(targets[i]) ||
-                targets[i] < 0.0 ||
-                targets[i] > 1.0) {
-                throw std::invalid_argument(
-                    "Targets must be finite and in the range [0,1]."
-                );
-            }
-
-            gradient[i] =
-                (stable_sigmoid(logits[i]) - targets[i]) / output_width;
-
-            if (!std::isfinite(gradient[i])) {
-                throw std::runtime_error(
-                    "BCE loss gradient produced a non-finite value."
-                );
-            }
-        }
-
-        return gradient;
-        };
-
-    return objective;
 } 
+#pragma endregion
 
+#pragma region Hinge Objective
+ObjectiveFunctions make_hinge_objective() {
+    throw std::logic_error("Not Implemented");
+}
+#pragma endregion
 
-// Common objective evaluation infrastructure
+#pragma region Common Evaluation Objective Infrastructure
 void validate_objective_functions(const ObjectiveFunctions& objective)
 {
     if (!objective.sample_loss || !objective.sample_loss_gradient) {
@@ -555,77 +495,13 @@ ObjectiveConfig make_objective_config(
     return config;
 }
 
-RegularizationTerm make_l2_regularization(
-    const double,
-    const bool
-)
-{
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement make_l2_regularization."
-    );
-}
-
-RegularizationTerm make_l1_regularization(
-    const double,
-    const bool
-)
-{
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement make_l1_regularization."
-    );
-}
-
-RegularizationTerm make_elastic_net_regularization(
-    const double,
-    const double,
-    const bool
-)
-{
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement make_elastic_net_regularization."
-    );
-}
-
-void validate_objective_config(const ObjectiveConfig& config)
-{
-    validate_objective_functions(config.data_objective);
-    
-    for (const RegularizationTerm& term : config.regularizers) {
-        if (term.name.empty()) {
-            throw std::invalid_argument(
-                "Regularization term name must not be empty."
-            );
-        }
-        if (!std::isfinite(term.coefficient)) {
-            throw std::invalid_argument(
-                "Regularization term must be finite"
-            );
-        }
-        if (term.coefficient < 0.0) {
-            throw std::invalid_argument(
-                "Regularization term coefficient must be non-negative."
-            );
-		}
-        if (!term.value) {
-            throw std::invalid_argument(
-                "Regularization term must provide value callback."
-            );
-        }
-        if (!term.add_gradient) {
-            throw std::invalid_argument(
-                "Regularization term must provide gradient callback."
-            );
-        }
-	}
-}
-
 double regularization_loss(
     const MLP& network,
     const ObjectiveConfig& config
 )
 {
-	validate_objective_config(config);
-	double total_loss = 0.0;
+    validate_objective_config(config);
+    double total_loss = 0.0;
 
     for (const RegularizationTerm& term : config.regularizers) {
         double term_loss = term.value(network);
@@ -641,7 +517,40 @@ double regularization_loss(
             );
         }
     }
-	return total_loss;
+    return total_loss;
+}
+
+void validate_objective_config(const ObjectiveConfig& config)
+{
+    validate_objective_functions(config.data_objective);
+
+    for (const RegularizationTerm& term : config.regularizers) {
+        if (term.name.empty()) {
+            throw std::invalid_argument(
+                "Regularization term name must not be empty."
+            );
+        }
+        if (!std::isfinite(term.coefficient)) {
+            throw std::invalid_argument(
+                "Regularization term must be finite"
+            );
+        }
+        if (term.coefficient < 0.0) {
+            throw std::invalid_argument(
+                "Regularization term coefficient must be non-negative."
+            );
+        }
+        if (!term.value) {
+            throw std::invalid_argument(
+                "Regularization term must provide value callback."
+            );
+        }
+        if (!term.add_gradient) {
+            throw std::invalid_argument(
+                "Regularization term must provide gradient callback."
+            );
+        }
+    }
 }
 
 void add_regularization_gradients(
@@ -651,13 +560,61 @@ void add_regularization_gradients(
 )
 {
     validate_objective_config(config);
-	validate_gradients_like(network, gradients);
+    validate_network(network);
+    validate_gradients_like(network, gradients);
+
     for (const RegularizationTerm& term : config.regularizers) {
-        NetworkGradients cand = gradients;
-		term.add_gradient(network, cand);
-		validate_gradients_like(network, cand);
-		gradients = std::move(cand);
-	}
+        // Regularizer callbacks produce unscaled contributions. Apply the
+        // coefficient here so data gradients are never scaled and every
+        // coefficient is applied exactly once.
+        NetworkGradients regularizer_gradients =
+            make_zero_gradients_like(network);
+        term.add_gradient(network, regularizer_gradients);
+        validate_gradients_like(network, regularizer_gradients);
+
+        NetworkGradients candidate = gradients;
+
+        for (std::size_t layer_index = 0;
+             layer_index < candidate.layers.size();
+             ++layer_index) {
+            LayerGradients& candidate_layer = candidate.layers[layer_index];
+            const LayerGradients& regularizer_layer =
+                regularizer_gradients.layers[layer_index];
+
+            for (std::size_t i = 0;
+                 i < candidate_layer.weights.size();
+                 ++i) {
+                const double contribution =
+                    term.coefficient * regularizer_layer.weights[i];
+
+                if (!std::isfinite(contribution)) {
+                    throw std::overflow_error(
+                        "Regularization gradient contribution overflowed."
+                    );
+                }
+
+                candidate_layer.weights[i] += contribution;
+            }
+
+            for (std::size_t i = 0;
+                 i < candidate_layer.biases.size();
+                 ++i) {
+                const double contribution =
+                    term.coefficient * regularizer_layer.biases[i];
+
+                if (!std::isfinite(contribution)) {
+                    throw std::overflow_error(
+                        "Regularization gradient contribution overflowed."
+                    );
+                }
+
+                candidate_layer.biases[i] += contribution;
+            }
+        }
+
+        validate_gradients_like(network, candidate);
+        gradients = std::move(candidate);
+    }
 }
 
 double objective_loss(
@@ -666,9 +623,9 @@ double objective_loss(
     const ObjectiveConfig& config
 )
 {
-	validate_objective_config(config);
-    
-	double loss_no_reg_terms = batch_loss(network, dataset, config.data_objective);
+    validate_objective_config(config);
+
+    double loss_no_reg_terms = batch_loss(network, dataset, config.data_objective);
     double reg_terms = regularization_loss(network, config);
     double total_loss = loss_no_reg_terms + reg_terms;
     if (!std::isfinite(total_loss)) {
@@ -676,7 +633,7 @@ double objective_loss(
             "Total objective loss overflowed."
         );
     }
-	return total_loss;
+    return total_loss;
 }
 
 NetworkGradients objective_gradients(
@@ -685,7 +642,379 @@ NetworkGradients objective_gradients(
     const ObjectiveConfig& config
 )
 {
-	auto gradients = batch_gradients(network, dataset, config.data_objective);
-	add_regularization_gradients(network, config, gradients);
-	return gradients;
+    auto gradients = batch_gradients(network, dataset, config.data_objective);
+    add_regularization_gradients(network, config, gradients);
+    return gradients;
 }
+
+#pragma endregion
+
+#pragma region L2 Regularization
+
+/// <summary>
+/// Ridge Regularization (L2) regularization term with the specified strength. 
+/// L2 regularization is the sum of the squares of the weights (and optionally biases) multiplied by a scalar. 
+/// It encourages smaller weights and can help prevent overfitting.
+/// Mathematically it is the L2 norm of the weights (and optionally biases) squared, scaled by the given scalar.
+/// </summary>
+/// <param name="scalar">The regularization strength (scale factor) applied to the L2 penalty - typically a non-negative value.</param>
+/// <param name="include_biases">If true, include bias parameter in the regularization; otherwise only apply to weights. Default is false</param>
+/// <returns>A RegularizationTerm configured to apply an L2 penalty with the given scalar. If include_biases is true, the penalty will also be applied to bias parameters.</returns>
+RegularizationTerm make_l2_regularization(
+    const double scalar,
+    const bool include_biases
+)
+{
+    if (!std::isfinite(scalar) || scalar < 0.0) {
+        throw std::invalid_argument(
+            "L2 regularization scalar must be finite and non-negative."
+        );
+    }
+
+    RegularizationTerm term;
+    term.name = "L2 Regularization";
+    term.value = [include_biases](const MLP& network) -> double {
+		validate_network(network);
+        
+        double l2_sum = 0.0;
+        for (const auto& layer : network.layers) {
+            for (const auto& weight : layer.weights) {
+                l2_sum += weight*weight;
+            }
+            if (!std::isfinite(l2_sum)) {
+                throw std::overflow_error(
+                    "L2 regularization value overflowed."
+                );
+            }
+            if (include_biases) {
+                for (double bias : layer.biases) {
+                    l2_sum += bias*bias;
+                }
+                if (!std::isfinite(l2_sum)) {
+                    throw std::overflow_error(
+                        "L2 regularization value overflowed."
+                    );
+                }
+            }
+        }
+        return l2_sum;
+    };
+    term.add_gradient = [include_biases](const MLP& network, NetworkGradients& gradients) {
+		validate_network(network);
+		validate_gradients_like(network, gradients);
+
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
+            const auto& layer = network.layers[layer_idx];
+            auto& grad_layer = gradients.layers[layer_idx];
+            for (std::size_t i = 0; i < layer.weights.size(); i++) {
+                grad_layer.weights[i] += 2.0 * layer.weights[i];
+            }
+            if (include_biases) {
+                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
+                    grad_layer.biases[j] += 2.0 * layer.biases[j];
+                }
+            }
+        }
+        validate_gradients_like(network, gradients);
+    };
+    term.smooth = true;
+    term.includes_biases = include_biases;
+    term.coefficient = scalar;
+    return term;
+}
+
+#pragma endregion
+
+#pragma region L1 Regularization
+
+RegularizationTerm make_l1_regularization(
+    const double scalar,
+    const bool include_biases,
+    const L1Method method
+)
+{
+    switch (method) {
+        case L1Method::Subgradient:
+            return make_l1_regularization_subgradient(scalar, include_biases);
+        case L1Method::Proximal:
+            throw std::logic_error(
+                "Phase 1 exercise stub: implement proximal L1 regularization."
+            );
+        case L1Method::Eps_SmoothL1Regularizer:
+        case L1Method::Log_SmoothL1Regularizer:
+            throw std::logic_error(
+                "Phase 1 exercise stub: implement smooth L1 regularization."
+            );
+        default:
+            throw std::invalid_argument(
+                "Invalid L1 regularization method."
+            );
+    }
+}
+
+constexpr double l1_subgradient(const double value) noexcept {
+    if (value > 0.0) {
+        return 1.0;
+    }
+    else if (value < 0.0) {
+        return -1.0;
+    }
+    else {
+        return 0.0; // Subgradient at zero can be any value in [-1, 1], but we choose 0 for simplicity
+    }
+}
+
+//Smooth L1 Regularizer using epsilon smoothing ((theta^2 + eps^2)^(1/2) in place of absolute value)
+RegularizationTerm eps_make_l1_regularization_smooth(
+    const double scalar,
+    const bool include_biases = false
+)
+{
+    if (!std::isfinite(scalar) || scalar < 0.0) {
+        throw std::invalid_argument(
+            "L1 regularization scalar must be finite and non-negative."
+        );
+    }
+
+
+
+    RegularizationTerm term;
+    term.name = "L1 Regularization";
+    term.value = [scalar, include_biases](const MLP& network) -> double {
+        double l1_sum = 0.0;
+        for (const auto& layer : network.layers) {
+            for (const auto& weight : layer.weights) {
+                l1_sum += std::abs(weight);
+            }
+            if (include_biases) {
+                for (double bias : layer.biases) {
+                    l1_sum += std::abs(bias);
+                }
+            }
+            if (l1_sum < 0.0 || !std::isfinite(l1_sum)) {
+                throw std::overflow_error(
+                    "L1 regularization sum overflowed."
+                );
+            }
+        }
+        return scalar * l1_sum;
+    };
+    term.add_gradient = [scalar, include_biases](const MLP& network, NetworkGradients& gradients) {
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
+            const auto& layer = network.layers[layer_idx];
+            auto& grad_layer = gradients.layers[layer_idx];
+            for (std::size_t i = 0; i < layer.weights.size(); i++) {
+                grad_layer.weights[i] += scalar * l1_subgradient(layer.weights[i]);
+            }
+            if (include_biases) {
+                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
+                    grad_layer.biases[j] += scalar * l1_subgradient(layer.biases[j]);
+                }
+            }
+        }
+    };
+    term.smooth = false;
+    term.includes_biases = include_biases;
+    term.coefficient = scalar;
+    return term;
+}
+
+//Smooth L1 Regularizer using log smoothing T(log(1 + exp(theta/T)) + T(log(-theta/T)) in place of absolute value) 
+//where T is a temperature parameter that controls the smoothness of the approximation. As T approaches 0, 
+//the approximation approaches the true L1 norm. As T increases, the approximation becomes smoother and less sensitive to small changes in theta. 
+// (needs to be sufficiently small)
+RegularizationTerm log_make_l1_regularization_smooth(
+    const double scalar,
+    const bool include_biases = false
+)
+{
+    if (!std::isfinite(scalar) || scalar < 0.0) {
+        throw std::invalid_argument(
+            "L1 regularization scalar must be finite and non-negative."
+        );
+    }
+
+
+
+    RegularizationTerm term;
+    term.name = "L1 Regularization";
+    term.value = [scalar, include_biases](const MLP& network) -> double {
+        double l1_sum = 0.0;
+        for (const auto& layer : network.layers) {
+            for (const auto& weight : layer.weights) {
+                l1_sum += std::abs(weight);
+            }
+            if (include_biases) {
+                for (double bias : layer.biases) {
+                    l1_sum += std::abs(bias);
+                }
+            }
+            if (l1_sum < 0.0 || !std::isfinite(l1_sum)) {
+                throw std::overflow_error(
+                    "L1 regularization sum overflowed."
+                );
+            }
+        }
+        return scalar * l1_sum;
+        };
+    term.add_gradient = [scalar, include_biases](const MLP& network, NetworkGradients& gradients) {
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
+            const auto& layer = network.layers[layer_idx];
+            auto& grad_layer = gradients.layers[layer_idx];
+            for (std::size_t i = 0; i < layer.weights.size(); i++) {
+                grad_layer.weights[i] += scalar * l1_subgradient(layer.weights[i]);
+            }
+            if (include_biases) {
+                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
+                    grad_layer.biases[j] += scalar * l1_subgradient(layer.biases[j]);
+                }
+            }
+        }
+        };
+    term.smooth = false;
+    term.includes_biases = include_biases;
+    term.coefficient = scalar;
+    return term;
+}
+
+//Proximal Code
+RegularizationTerm make_l1_regularization_Proximal(
+    const double scalar,
+    const bool include_biases = false
+)
+{
+    if (!std::isfinite(scalar) || scalar < 0.0) {
+        throw std::invalid_argument(
+            "L1 regularization scalar must be finite and non-negative."
+        );
+    }
+
+
+
+    RegularizationTerm term;
+    term.name = "L1 Regularization";
+    term.value = [scalar, include_biases](const MLP& network) -> double {
+        double l1_sum = 0.0;
+        for (const auto& layer : network.layers) {
+            for (const auto& weight : layer.weights) {
+                l1_sum += std::abs(weight);
+            }
+            if (include_biases) {
+                for (double bias : layer.biases) {
+                    l1_sum += std::abs(bias);
+                }
+            }
+        }
+        return scalar * l1_sum;
+        };
+    term.add_gradient = [scalar, include_biases](const MLP& network, NetworkGradients& gradients) {
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
+            const auto& layer = network.layers[layer_idx];
+            auto& grad_layer = gradients.layers[layer_idx];
+            for (std::size_t i = 0; i < layer.weights.size(); i++) {
+                grad_layer.weights[i] += scalar * l1_subgradient(layer.weights[i]);
+            }
+            if (include_biases) {
+                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
+                    grad_layer.biases[j] += scalar * l1_subgradient(layer.biases[j]);
+                }
+            }
+        }
+        };
+    term.smooth = false;
+    term.includes_biases = include_biases;
+    term.coefficient = scalar;
+    return term;
+}
+
+/// <summary>
+/// Creates an L1 (Lasso) regularization term with the specified strength.
+/// </summary>
+/// <param name="scalar">The regularization strength (scale factor) applied to the L1 penalty — typically a non-negative value.</param>
+/// <param name="include_biases">If true, include bias parameters in the regularization; otherwise only apply to weights. Default is false.</param>
+/// <returns>A RegularizationTerm configured to apply an L1 penalty with the given scalar. If include_biases is true, the penalty will also be applied to bias parameters.</returns>
+RegularizationTerm make_l1_regularization_subgradient(
+    const double scalar,
+    const bool include_biases
+)
+{
+    if (!std::isfinite(scalar) || scalar < 0.0) {
+        throw std::invalid_argument(
+            "L1 regularization scalar must be finite and non-negative."
+        );
+	}
+
+
+
+	RegularizationTerm term;
+    term.name = "L1 Regularization";
+    term.value = [include_biases](const MLP& network) -> double {
+        double l1_sum = 0.0;
+        for (const auto& layer : network.layers) {
+            for (const auto& weight : layer.weights) {
+                    l1_sum += std::abs(weight);
+                    if (!std::isfinite(l1_sum)) {
+                        throw std::overflow_error(
+                            "L1 regularization sum overflowed."
+                        );
+                    }
+            }
+            if (include_biases) {
+                for (double bias : layer.biases) {
+                    l1_sum += std::abs(bias);
+                }
+                if (!std::isfinite(l1_sum)) {
+                    throw std::overflow_error(
+                        "L1 regularization sum overflowed."
+                    );
+                }
+            }
+        }
+        return l1_sum;
+    };
+    term.add_gradient = [include_biases](const MLP& network, NetworkGradients& gradients) {
+        validate_network(network);
+        validate_gradients_like(network, gradients);
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
+            const auto& layer = network.layers[layer_idx];
+            auto& grad_layer = gradients.layers[layer_idx];
+            for (std::size_t i = 0; i < layer.weights.size(); i++) {
+				grad_layer.weights[i] += l1_subgradient(layer.weights[i]);
+            }
+            if (include_biases) {
+                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
+                    grad_layer.biases[j] += l1_subgradient(layer.biases[j]);
+                }
+            }
+        }
+        validate_gradients_like(network, gradients);
+		};
+	term.smooth = false;
+	term.includes_biases = include_biases;
+    term.coefficient = scalar;
+    return term;
+}
+
+#pragma endregion
+
+#pragma region Elastic Net Regularization
+
+/// <summary>
+/// Creates an Elastic Net regularization term that combines L1 and L2 penalties with the specified strengths.
+/// </summary>
+/// <param name="L1_scalar">The value specifying the strength of the L1 regularization term</param>
+/// <param name="L2_scalar">The value specifying the strength of the L2 regularization term</param>
+/// <param name="include_biases">If true, include bias parameters in the regularization; otherwise only apply to weights. Default is false.</param>
+/// <returns></returns>
+RegularizationTerm make_elastic_net_regularization(
+    const double L1_scalar,
+    const double L2_scalar,
+	const bool include_biases
+)
+{
+    throw std::logic_error(
+        "Phase 1 exercise stub: implement make_elastic_net_regularization."
+    );
+}
+
+#pragma endregion

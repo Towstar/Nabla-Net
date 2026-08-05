@@ -60,7 +60,20 @@ RegularizationTerm make_l2_regularization(
     bool include_biases = false
 );
 
+enum class L1Method {
+    Subgradient,
+    Proximal,
+    Eps_SmoothL1Regularizer,
+    Log_SmoothL1Regularizer
+};
+
 RegularizationTerm make_l1_regularization(
+    double coefficient,
+    bool include_biases = false,
+    L1Method method = L1Method::Subgradient
+);
+
+RegularizationTerm make_l1_regularization_subgradient(
     double coefficient,
     bool include_biases = false
 );
