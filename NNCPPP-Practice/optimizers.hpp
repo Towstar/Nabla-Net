@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -66,20 +67,53 @@ namespace Optimizers {
     extern const OptimizerSpec LBFGS;
 }
 
+enum class BatchMode {
+    FullBatch,
+    MiniBatch,
+    Stochastic
+};
+
+enum class TrainingStopReason {
+    NotStarted,
+    MaxIterations,
+    MaxEpochs,
+    GradientTolerance,
+    ParameterChangeTolerance,
+    OptimizerStopped
+};
+
 struct TrainingConfig {
-    std::size_t epochs{ 1 };
+    BatchMode batch_mode{ BatchMode::FullBatch };
     std::size_t batch_size{};
+
+    // At least one limit must be enabled. The default is one epoch, which
+    // preserves the behavior of the original training scaffold.
+    std::optional<std::size_t> max_iterations{};
+    std::optional<std::size_t> max_epochs{ 1 };
+
+    std::optional<double> gradient_tolerance{};
+    std::optional<double> parameter_change_tolerance{};
+
     bool shuffle{ false };
     std::uint32_t shuffle_seed{ 0 };
-    double gradient_tolerance{};
+    bool record_history{ true };
 };
 
 struct TrainingReport {
     bool completed{};
+    TrainingStopReason stop_reason{ TrainingStopReason::NotStarted };
+    std::string optimizer_name;
     std::size_t epochs_completed{};
     std::size_t steps{};
+
+    double initial_loss{};
+    double final_loss{};
+    double final_gradient_norm{};
+    double final_parameter_change{};
+
     std::vector<double> losses;
     std::vector<double> gradient_norms;
+    std::vector<double> parameter_changes;
 };
 
 OptimizerSpec make_custom_optimizer(
@@ -96,7 +130,7 @@ void validate_training_config(
     const TrainingConfig& config
 );
 
-void train(
+TrainingReport train(
     MLP& network,
     const Dataset& dataset,
     const OptimizerSpec& optimizer,

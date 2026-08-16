@@ -2,9 +2,11 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "mlp.hpp"
 #include "objective_functions.hpp"
@@ -44,6 +46,12 @@ void require_throws(Function function, std::string_view message)
     throw std::runtime_error(std::string(message));
 }
 
+void require_gradient_layout(
+    const MLP& network,
+    const NetworkGradients& gradients,
+    const std::string_view message
+);
+
 class TestOptimizer final : public Optimizer
 {
 public:
@@ -61,6 +69,78 @@ public:
         return {};
     }
 };
+
+struct TrainingTrace
+{
+    std::size_t reset_calls{};
+    std::size_t step_calls{};
+    bool saw_regularizer{};
+    std::vector<std::size_t> batch_sizes;
+    std::vector<double> first_input_values;
+};
+
+class RecordingOptimizer final : public Optimizer
+{
+public:
+    explicit RecordingOptimizer(std::shared_ptr<TrainingTrace> trace)
+        : trace_(std::move(trace))
+    {
+    }
+
+    const char* name() const noexcept override
+    {
+        return "RecordingOptimizer";
+    }
+
+    void reset(const MLP&) override
+    {
+        ++trace_->reset_calls;
+    }
+
+    TrainingStepResult step(OptimizerContext& context) override
+    {
+        require(!context.batch.empty(),
+            "trainer must never pass an empty batch to an optimizer");
+        require(std::isfinite(context.current_loss),
+            "trainer must pass a finite current loss to an optimizer");
+        require_gradient_layout(
+            context.network,
+            context.current_gradient,
+            "trainer must pass gradients matching the network"
+        );
+
+        ++trace_->step_calls;
+        trace_->saw_regularizer =
+            trace_->saw_regularizer || !context.objective.regularizers.empty();
+        trace_->batch_sizes.push_back(context.batch.size());
+        trace_->first_input_values.push_back(context.batch.front().input.front());
+
+        TrainingStepResult result;
+        result.updated = true;
+        result.previous_loss = context.current_loss;
+        result.new_loss = context.current_loss;
+        result.gradient_norm = gradient_l2_norm(context.current_gradient);
+        return result;
+    }
+
+private:
+    std::shared_ptr<TrainingTrace> trace_;
+};
+
+OptimizerSpec make_recording_optimizer(
+    const std::shared_ptr<TrainingTrace>& trace,
+    const OptimizerRequirement requirement =
+        OptimizerRequirement::MiniBatchCompatible
+)
+{
+    return make_custom_optimizer(
+        "RecordingOptimizer",
+        requirement,
+        [trace] {
+            return std::make_unique<RecordingOptimizer>(trace);
+        }
+    );
+}
 
 void require_invalid_wolfe_parameters(
     WolfeParameters parameters,
@@ -3187,28 +3267,77 @@ void phase_one_training_config_skeleton()
     TrainingConfig full_batch{};
     validate_training_config(full_batch);
 
-    require(full_batch.epochs == 1,
-        "default training configuration should use one epoch");
+    require(full_batch.batch_mode == BatchMode::FullBatch,
+        "default training configuration should use full-batch mode");
     require(full_batch.batch_size == 0,
-        "zero batch size should represent full-dataset batches");
-    require(full_batch.gradient_tolerance == 0.0,
-        "zero gradient tolerance should disable early stopping");
+        "full-batch training should use batch_size == 0");
+    require(full_batch.max_epochs.has_value() &&
+            *full_batch.max_epochs == 1,
+        "default training configuration should use one epoch");
+    require(!full_batch.gradient_tolerance.has_value(),
+        "gradient tolerance should be disabled by default");
 
     TrainingConfig mini_batch{};
-    mini_batch.epochs = 5;
+    mini_batch.batch_mode = BatchMode::MiniBatch;
+    mini_batch.max_epochs = 5;
     mini_batch.batch_size = 4;
     mini_batch.shuffle = true;
     mini_batch.shuffle_seed = 1234;
     mini_batch.gradient_tolerance = 1e-6;
+    mini_batch.parameter_change_tolerance = 1e-8;
 
     validate_training_config(mini_batch);
 
+    TrainingConfig stochastic{};
+    stochastic.batch_mode = BatchMode::Stochastic;
+    stochastic.batch_size = 1;
+    stochastic.max_iterations = 4;
+    stochastic.max_epochs.reset();
+    validate_training_config(stochastic);
+
     TrainingConfig zero_epochs{};
-    zero_epochs.epochs = 0;
+    zero_epochs.max_epochs = 0;
 
     require_throws([&zero_epochs] {
         validate_training_config(zero_epochs);
     }, "zero training epochs should be rejected");
+
+    TrainingConfig zero_iterations{};
+    zero_iterations.max_epochs.reset();
+    zero_iterations.max_iterations = 0;
+
+    require_throws([&zero_iterations] {
+        validate_training_config(zero_iterations);
+    }, "zero training iterations should be rejected");
+
+    TrainingConfig no_limits{};
+    no_limits.max_epochs.reset();
+
+    require_throws([&no_limits] {
+        validate_training_config(no_limits);
+    }, "training without an iteration or epoch limit should be rejected");
+
+    TrainingConfig full_batch_with_size{};
+    full_batch_with_size.batch_size = 2;
+
+    require_throws([&full_batch_with_size] {
+        validate_training_config(full_batch_with_size);
+    }, "full-batch mode should reject a positive batch size");
+
+    TrainingConfig mini_batch_without_size{};
+    mini_batch_without_size.batch_mode = BatchMode::MiniBatch;
+
+    require_throws([&mini_batch_without_size] {
+        validate_training_config(mini_batch_without_size);
+    }, "mini-batch mode should require a positive batch size");
+
+    TrainingConfig stochastic_with_large_size{};
+    stochastic_with_large_size.batch_mode = BatchMode::Stochastic;
+    stochastic_with_large_size.batch_size = 2;
+
+    require_throws([&stochastic_with_large_size] {
+        validate_training_config(stochastic_with_large_size);
+    }, "stochastic mode should use batch size one");
 
     TrainingConfig negative_tolerance{};
     negative_tolerance.gradient_tolerance = -1.0;
@@ -3218,12 +3347,12 @@ void phase_one_training_config_skeleton()
     }, "negative gradient tolerance should be rejected");
 
     TrainingConfig nan_tolerance{};
-    nan_tolerance.gradient_tolerance =
+    nan_tolerance.parameter_change_tolerance =
         std::numeric_limits<double>::quiet_NaN();
 
     require_throws([&nan_tolerance] {
         validate_training_config(nan_tolerance);
-    }, "NaN gradient tolerance should be rejected");
+    }, "NaN parameter-change tolerance should be rejected");
 
     TrainingConfig infinite_tolerance{};
     infinite_tolerance.gradient_tolerance =
@@ -3232,6 +3361,373 @@ void phase_one_training_config_skeleton()
     require_throws([&infinite_tolerance] {
         validate_training_config(infinite_tolerance);
     }, "infinite gradient tolerance should be rejected");
+
+    std::cout << "[PASS] future-ready training configuration contract\n";
+}
+
+Dataset make_training_contract_dataset()
+{
+    return Dataset{
+        { { 0.0 }, { 0.0 } },
+        { { 1.0 }, { 1.0 } },
+        { { 2.0 }, { 0.0 } },
+        { { 3.0 }, { 1.0 } },
+        { { 4.0 }, { 0.0 } }
+    };
+}
+
+void run_training_contract_checks()
+{
+    const Dataset dataset = make_training_contract_dataset();
+    const ObjectiveConfig objective = make_objective_config(
+        make_binary_cross_entropy_objective(),
+        { make_l2_regularization(0.1) }
+    );
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.max_epochs = 2;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            objective
+        );
+
+        require(report.completed,
+            "trainer should report normal completion at an epoch limit");
+        require(report.stop_reason == TrainingStopReason::MaxEpochs,
+            "trainer should report the epoch limit as its stop reason");
+        require(report.optimizer_name == "RecordingOptimizer",
+            "training report should preserve the optimizer name");
+        require(report.epochs_completed == 2,
+            "trainer should report every completed epoch");
+        require(report.steps == 2,
+            "full-batch training should perform one update per epoch");
+        require(report.losses.size() == report.steps,
+            "trainer should record one loss per step by default");
+        require(report.gradient_norms.size() == report.steps,
+            "trainer should record one gradient norm per step by default");
+        require(report.parameter_changes.size() == report.steps,
+            "trainer should record one parameter change per step by default");
+        require(trace->reset_calls == 1,
+            "trainer should reset a newly-created optimizer exactly once");
+        require(trace->step_calls == 2,
+            "trainer should call the optimizer once per full batch");
+        require(trace->saw_regularizer,
+            "trainer should pass the complete objective configuration");
+        require(trace->batch_sizes == std::vector<std::size_t>{ 5, 5 },
+            "full-batch training should pass the complete dataset each epoch");
+        require(std::isfinite(report.initial_loss) &&
+                std::isfinite(report.final_loss),
+            "training report losses should be finite");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.batch_mode = BatchMode::MiniBatch;
+        config.batch_size = 3;
+        config.max_epochs = 2;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.steps == 4,
+            "mini-batch training should retain the final partial batch");
+        require(trace->batch_sizes ==
+                std::vector<std::size_t>{ 3, 2, 3, 2 },
+            "mini-batches should be contiguous and deterministic");
+        require(trace->first_input_values ==
+                std::vector<double>{ 0.0, 3.0, 0.0, 3.0 },
+            "disabled shuffling should preserve identity dataset order");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.batch_mode = BatchMode::Stochastic;
+        config.batch_size = 1;
+        config.max_epochs = 1;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.steps == dataset.size(),
+            "stochastic training should perform one update per sample");
+        require(trace->batch_sizes ==
+                std::vector<std::size_t>{ 1, 1, 1, 1, 1 },
+            "stochastic training should use batch size one");
+    }
+
+    {
+        const auto run_shuffled = [&dataset](const std::uint32_t seed) {
+            auto trace = std::make_shared<TrainingTrace>();
+            MLP network = make_zero_network({ 1, 1 });
+            TrainingConfig config;
+            config.batch_mode = BatchMode::MiniBatch;
+            config.batch_size = 1;
+            config.max_epochs = 2;
+            config.shuffle = true;
+            config.shuffle_seed = seed;
+
+            static_cast<void>(train(
+                network,
+                dataset,
+                make_recording_optimizer(trace),
+                config,
+                make_objective_config()
+            ));
+            return trace->first_input_values;
+        };
+
+        const std::vector<double> first = run_shuffled(7);
+        const std::vector<double> same = run_shuffled(7);
+        const std::vector<double> different = run_shuffled(8);
+
+        require(first == same,
+            "equal shuffle seeds should produce identical batch order");
+        require(first != different,
+            "different shuffle seeds should produce different batch order");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.max_epochs = 5;
+        config.max_iterations = 3;
+        config.record_history = false;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.stop_reason == TrainingStopReason::MaxIterations,
+            "iteration limit should take precedence when reached first");
+        require(report.steps == 3,
+            "trainer should stop exactly at the maximum iteration count");
+        require(report.losses.empty() && report.gradient_norms.empty() &&
+                report.parameter_changes.empty(),
+            "record_history=false should omit per-step history");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.max_epochs = 5;
+        config.max_iterations = 1;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.stop_reason == TrainingStopReason::MaxIterations,
+            "iteration limit should be reported when it is reached on an epoch boundary");
+        require(report.steps == 1,
+            "epoch-boundary iteration limit should perform exactly one update");
+        require(report.epochs_completed == 1,
+            "a fully consumed final batch should count as a completed epoch");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.gradient_tolerance = 1e-12;
+        config.max_epochs = 5;
+
+        const Dataset zero_gradient_dataset{
+            { { 0.0 }, { 0.5 } }
+        };
+
+        const TrainingReport report = train(
+            network,
+            zero_gradient_dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.stop_reason == TrainingStopReason::GradientTolerance,
+            "trainer should stop before stepping when gradient tolerance is met");
+        require(report.steps == 0 && trace->step_calls == 0,
+            "gradient convergence should not invoke the optimizer");
+    }
+
+    {
+        MLP network = make_zero_network({ 1, 1 });
+        network.layers[0].weights[0] = 0.5;
+        network.layers[0].biases[0] = 0.25;
+
+        const Dataset batch{
+            { { 1.0 }, { 1.0 } }
+        };
+
+        SGDOptions options;
+        options.learning_rate_schedule = [](std::size_t) {
+            return 0.25;
+        };
+
+        TrainingConfig config;
+        config.max_iterations = 1;
+        config.max_epochs.reset();
+
+        const TrainingReport report = train(
+            network,
+            batch,
+            make_sgd(options),
+            config,
+            make_objective_config(make_mean_squared_error_objective())
+        );
+
+        require(report.stop_reason == TrainingStopReason::MaxIterations,
+            "one-step SGD training should stop at its iteration limit");
+        require_near(network.layers[0].weights[0], 0.625, 1e-12,
+            "trainer should pass the objective gradient to SGD");
+        require_near(network.layers[0].biases[0], 0.375, 1e-12,
+            "trainer should apply the same SGD step to biases");
+        require_near(report.initial_loss, 0.0625, 1e-12,
+            "trainer should report the pre-update loss");
+        require_near(report.final_loss, 0.0, 1e-12,
+            "trainer should report the post-update loss");
+    }
+
+    {
+        MLP network = make_zero_network({ 1, 1 });
+        network.layers[0].weights[0] = 0.5;
+        network.layers[0].biases[0] = 0.25;
+
+        const Dataset batch{
+            { { 1.0 }, { 1.0 } }
+        };
+
+        SGDOptions options;
+        options.learning_rate_schedule = [](std::size_t) {
+            return 0.25;
+        };
+
+        TrainingConfig config;
+        config.max_epochs = 10;
+        config.parameter_change_tolerance = 0.2;
+
+        const TrainingReport report = train(
+            network,
+            batch,
+            make_sgd(options),
+            config,
+            make_objective_config(make_mean_squared_error_objective())
+        );
+
+        require(report.stop_reason ==
+                TrainingStopReason::ParameterChangeTolerance,
+            "trainer should stop when a parameter-change tolerance is met");
+        require(report.steps == 1,
+            "parameter-change tolerance should stop after the first qualifying update");
+        require_near(report.final_parameter_change, 0.125, 1e-12,
+            "trainer should report the infinity norm of the parameter change");
+    }
+
+    {
+        MLP network = make_zero_network({ 1, 1, 1 });
+        const Dataset batch{
+            { { 0.0 }, { 1.0 } }
+        };
+
+        SGDOptions options;
+        options.learning_rate_schedule = [](std::size_t) {
+            return 0.25;
+        };
+
+        TrainingConfig config;
+        config.max_iterations = 1;
+        config.max_epochs.reset();
+
+        const TrainingReport report = train(
+            network,
+            batch,
+            make_sgd(options),
+            config,
+            make_objective_config(make_mean_squared_error_objective())
+        );
+
+        require(network.layers[0].weights ==
+                Values(network.layers[0].weights.size(), 0.0),
+            "zero-input training should not change the first-layer weights");
+        require(network.layers[0].biases ==
+                Values(network.layers[0].biases.size(), 0.0),
+            "zero-output-hidden training should not change the first-layer biases");
+        require(std::abs(network.layers[1].biases[0]) > 0.0,
+            "the output-layer bias should receive the training update");
+        require_near(
+            report.final_parameter_change,
+            std::abs(network.layers[1].biases[0]),
+            1e-12,
+            "parameter change should include updates from every layer"
+        );
+    }
+
+    {
+        MLP network = make_zero_network({ 1, 1 });
+        const MLP before = network;
+        TrainingConfig config;
+        config.batch_mode = BatchMode::MiniBatch;
+        config.batch_size = 2;
+
+        require_throws([&network, &config, &dataset] {
+            static_cast<void>(train(
+                network,
+                dataset,
+                make_recording_optimizer(
+                    std::make_shared<TrainingTrace>(),
+                    OptimizerRequirement::DeterministicFullBatch
+                ),
+                config,
+                make_objective_config()
+            ));
+        }, "full-batch-only optimizers should reject mini-batch training");
+        require(same_parameters(network, before),
+            "invalid optimizer/batch combinations must not mutate the network");
+    }
+
+    require_throws([&dataset] {
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        static_cast<void>(train(
+            network,
+            {},
+            make_recording_optimizer(std::make_shared<TrainingTrace>()),
+            config,
+            make_objective_config()
+        ));
+    }, "trainer should reject an empty dataset");
+
+    std::cout << "[PASS] trainer boundary, batching, stopping, determinism, and SGD integration\n";
 }
 
 void run_phase_one_stub_checks()
@@ -3288,7 +3784,6 @@ void run_phase_one_stub_checks()
     }, "custom optimizer construction should remain an explicit exercise stub");
 
     phase_one_optimizer_spec_skeleton();
-    phase_one_training_config_skeleton();
 
     validate_optimizer_spec(Optimizers::SGD);
     require(static_cast<bool>(Optimizers::SGD.make),
@@ -3345,5 +3840,7 @@ void run_all_self_checks()
     run_wolfe_scalar_checks();
     run_wolfe_candidate_checks();
     run_backtracking_wolfe_checks();
+    phase_one_training_config_skeleton();
+    run_training_contract_checks();
     run_phase_one_stub_checks();
 }

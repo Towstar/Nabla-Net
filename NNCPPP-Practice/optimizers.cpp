@@ -286,22 +286,76 @@ void validate_optimizer_spec(const OptimizerSpec& optimizer)
 
 void validate_training_config(const TrainingConfig& config)
 {
-    if (config.epochs == 0)
-    {
+    switch (config.batch_mode) {
+    case BatchMode::FullBatch:
+        if (config.batch_size != 0) {
+            throw std::invalid_argument(
+                "Full-batch training must use batch_size == 0."
+            );
+        }
+        break;
+
+    case BatchMode::MiniBatch:
+        if (config.batch_size == 0) {
+            throw std::invalid_argument(
+                "Mini-batch training requires a positive batch size."
+            );
+        }
+        break;
+
+    case BatchMode::Stochastic:
+        if (config.batch_size > 1) {
+            throw std::invalid_argument(
+                "Stochastic training uses batch size one."
+            );
+        }
+        break;
+
+    default:
         throw std::invalid_argument(
-            "Training epochs must be positive."
+            "Training configuration has an invalid batch mode."
         );
     }
 
-    if (!std::isfinite(config.gradient_tolerance) ||
-        config.gradient_tolerance < 0.0)
-    {
+    if (!config.max_iterations.has_value() &&
+        !config.max_epochs.has_value()) {
         throw std::invalid_argument(
-            "Gradient tolerance must be non-negative and finite."
+            "Training must specify a maximum iteration or epoch count."
         );
     }
 
-    // batch_size == 0 intentionally means full-dataset batches.
+    if (config.max_iterations.has_value() &&
+        *config.max_iterations == 0) {
+        throw std::invalid_argument(
+            "Maximum training iterations must be positive."
+        );
+    }
+
+    if (config.max_epochs.has_value() &&
+        *config.max_epochs == 0) {
+        throw std::invalid_argument(
+            "Maximum training epochs must be positive."
+        );
+    }
+
+    const auto validate_tolerance = [](
+        const std::optional<double>& tolerance,
+        const char* name
+    ) {
+        if (tolerance.has_value() &&
+            (!std::isfinite(*tolerance) || *tolerance < 0.0)) {
+            throw std::invalid_argument(
+                std::string(name) +
+                " must be non-negative and finite."
+            );
+        }
+    };
+
+    validate_tolerance(config.gradient_tolerance, "Gradient tolerance");
+    validate_tolerance(
+        config.parameter_change_tolerance,
+        "Parameter-change tolerance"
+    );
 }
 
 #pragma endregion
