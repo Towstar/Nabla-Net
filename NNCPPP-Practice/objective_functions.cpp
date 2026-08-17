@@ -495,6 +495,10 @@ ObjectiveConfig make_objective_config(
     return config;
 }
 
+ObjectiveConfig make_objective_config(const ObjectiveFunctions& data_objective, RegularizationTerm regularizer) {
+    return make_objective_config(data_objective, std::vector<RegularizationTerm>{std::move(regularizer)});
+}
+
 double regularization_loss(
     const MLP& network,
     const ObjectiveConfig& config
@@ -767,7 +771,7 @@ constexpr double l1_subgradient(const double value) noexcept {
 //Smooth L1 Regularizer using epsilon smoothing ((theta^2 + eps^2)^(1/2) in place of absolute value)
 RegularizationTerm eps_make_l1_regularization_smooth(
     const double scalar,
-    const bool include_biases = false
+    const bool include_biases
 )
 {
     if (!std::isfinite(scalar) || scalar < 0.0) {
@@ -825,7 +829,7 @@ RegularizationTerm eps_make_l1_regularization_smooth(
 // (needs to be sufficiently small)
 RegularizationTerm log_make_l1_regularization_smooth(
     const double scalar,
-    const bool include_biases = false
+    const bool include_biases
 )
 {
     if (!std::isfinite(scalar) || scalar < 0.0) {
@@ -880,7 +884,7 @@ RegularizationTerm log_make_l1_regularization_smooth(
 //Proximal Code
 RegularizationTerm make_l1_regularization_Proximal(
     const double scalar,
-    const bool include_biases = false
+    const bool include_biases
 )
 {
     if (!std::isfinite(scalar) || scalar < 0.0) {

@@ -191,6 +191,10 @@ struct RegularizationTerm {
 	double coefficient{ 0.0 };
 };
 
+/// <summary>
+/// <para>ObjectiveFunction data_objective</para>
+/// <para>regularizers (vector of regularization terms)</para>
+/// </summary>
 struct ObjectiveConfig {
     ObjectiveFunctions data_objective;
     std::vector<RegularizationTerm> regularizers;

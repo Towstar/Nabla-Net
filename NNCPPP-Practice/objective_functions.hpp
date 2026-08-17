@@ -2,6 +2,8 @@
 
 #include "mlp.hpp"
 
+#include <vector>
+
 // Objective-function primitives and objective factories.
 Values stable_softmax(const Values& logits);
 
@@ -19,12 +21,18 @@ ObjectiveFunctions make_binary_cross_entropy_objective();
 ObjectiveFunctions make_softmax_cross_entropy_objective();
 ObjectiveFunctions make_mean_squared_error_objective();
 ObjectiveFunctions make_exponential_objective();
+ObjectiveFunctions make_hinge_objective();
 
 // Common objective evaluation and composition.
 ObjectiveConfig make_objective_config(
     const ObjectiveFunctions& data_objective =
         make_binary_cross_entropy_objective(),
     std::vector<RegularizationTerm> regularizers = {}
+);
+
+ObjectiveConfig make_objective_config(
+    const ObjectiveFunctions& data_objective,
+    RegularizationTerm regularizer
 );
 
 void validate_objective_functions(
@@ -74,6 +82,21 @@ RegularizationTerm make_l1_regularization(
 );
 
 RegularizationTerm make_l1_regularization_subgradient(
+    double coefficient,
+    bool include_biases = false
+);
+
+RegularizationTerm eps_make_l1_regularization_smooth(
+    double coefficient,
+    bool include_biases = false
+);
+
+RegularizationTerm log_make_l1_regularization_smooth(
+    double coefficient,
+    bool include_biases = false
+);
+
+RegularizationTerm make_l1_regularization_Proximal(
     double coefficient,
     bool include_biases = false
 );

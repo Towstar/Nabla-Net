@@ -3,6 +3,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -11,7 +12,9 @@
 #include "mlp.hpp"
 #include "objective_functions.hpp"
 #include "optimizers.hpp"
+#include "train.hpp"
 #include "wolfe_analysis.hpp"
+#include "train.hpp"
 
 namespace {
 void require(const bool condition, const std::string_view message)
@@ -1173,6 +1176,183 @@ void run_sgd_optimizer_checks()
     std::cout << "[PASS] configurable SGD and learning-rate schedules\n";
 }
 
+void run_momentum_sgd_optimizer_checks()
+{
+    MLP network = make_zero_network({ 1, 1 });
+    network.layers[0].weights = { 0.5 };
+    network.layers[0].biases = { 0.25 };
+
+    const Dataset batch{
+        { { 1.0 }, { 0.0 } }
+    };
+    const ObjectiveConfig objective = make_objective_config(
+        make_mean_squared_error_objective()
+    );
+
+    NetworkGradients gradient = make_zero_gradients_like(network);
+    gradient.layers[0].weights[0] = 0.2;
+    gradient.layers[0].biases[0] = 0.6;
+
+    std::vector<std::size_t> observed_schedule_steps;
+    MomentumSGDOptions options;
+    options.momentum = 0.5;
+    options.learning_rate_schedule =
+        [&observed_schedule_steps](const std::size_t update_index) {
+            observed_schedule_steps.push_back(update_index);
+            return 0.5;
+        };
+
+    const OptimizerSpec configured_momentum = make_momentum_sgd(options);
+    validate_optimizer_spec(configured_momentum);
+
+    std::unique_ptr<Optimizer> optimizer = configured_momentum.make();
+    require(optimizer != nullptr,
+        "configured Momentum SGD factory should create an optimizer");
+
+    optimizer->reset(network);
+
+    const double first_loss = objective_loss(network, batch, objective);
+    OptimizerContext first_context{
+        network,
+        batch,
+        objective,
+        first_loss,
+        gradient
+    };
+
+    const TrainingStepResult first_result =
+        optimizer->step(first_context);
+
+    require(first_result.updated,
+        "Momentum SGD should report a successful first update");
+    require_near(first_result.previous_loss, first_loss, 1e-12,
+        "Momentum SGD should preserve the supplied previous loss");
+    require_near(first_result.gradient_norm, std::sqrt(0.4), 1e-12,
+        "Momentum SGD should report the current gradient norm");
+    require_near(network.layers[0].weights[0], 0.4, 1e-12,
+        "Momentum SGD should use the current gradient on its first step");
+    require_near(network.layers[0].biases[0], -0.05, 1e-12,
+        "Momentum SGD should update biases on its first step");
+    require_near(first_result.new_loss, 0.1225, 1e-12,
+        "Momentum SGD should report the first post-update loss");
+
+    const double second_loss = objective_loss(network, batch, objective);
+    OptimizerContext second_context{
+        network,
+        batch,
+        objective,
+        second_loss,
+        gradient
+    };
+    const TrainingStepResult second_result =
+        optimizer->step(second_context);
+
+    require(second_result.updated,
+        "Momentum SGD should report a successful second update");
+    require_near(network.layers[0].weights[0], 0.25, 1e-12,
+        "Momentum SGD should accumulate weight velocity across steps");
+    require_near(network.layers[0].biases[0], -0.5, 1e-12,
+        "Momentum SGD should accumulate bias velocity across steps");
+
+    optimizer->reset(network);
+    const double reset_loss = objective_loss(network, batch, objective);
+    OptimizerContext reset_context{
+        network,
+        batch,
+        objective,
+        reset_loss,
+        gradient
+    };
+    static_cast<void>(optimizer->step(reset_context));
+
+    require_near(network.layers[0].weights[0], 0.15, 1e-12,
+        "Momentum SGD reset should clear the accumulated weight velocity");
+    require_near(network.layers[0].biases[0], -0.8, 1e-12,
+        "Momentum SGD reset should clear the accumulated bias velocity");
+    require(observed_schedule_steps ==
+            std::vector<std::size_t>{ 0, 1, 0 },
+        "Momentum SGD reset should restart the schedule at update zero");
+
+    for (const double invalid_momentum : {
+             -0.1,
+             1.0,
+             std::numeric_limits<double>::quiet_NaN()
+         }) {
+        MomentumSGDOptions invalid_options = options;
+        invalid_options.momentum = invalid_momentum;
+
+        require_throws([&invalid_options] {
+            const OptimizerSpec invalid_spec =
+                make_momentum_sgd(invalid_options);
+            static_cast<void>(invalid_spec.make());
+        }, "Momentum SGD should reject an invalid momentum coefficient");
+    }
+
+    MomentumSGDOptions empty_schedule = options;
+    empty_schedule.learning_rate_schedule = {};
+    require_throws([&empty_schedule] {
+        const OptimizerSpec invalid_spec =
+            make_momentum_sgd(empty_schedule);
+        static_cast<void>(invalid_spec.make());
+    }, "Momentum SGD should reject an empty learning-rate schedule");
+
+    MomentumSGDOptions invalid_schedule = options;
+    invalid_schedule.learning_rate_schedule = [](std::size_t) {
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    const OptimizerSpec invalid_momentum_schedule =
+        make_momentum_sgd(invalid_schedule);
+    std::unique_ptr<Optimizer> invalid_optimizer =
+        invalid_momentum_schedule.make();
+    invalid_optimizer->reset(network);
+
+    const MLP before_invalid_step = network;
+    const double invalid_step_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext invalid_context{
+        network,
+        batch,
+        objective,
+        invalid_step_loss,
+        gradient
+    };
+
+    require_throws([&invalid_optimizer, &invalid_context] {
+        static_cast<void>(invalid_optimizer->step(invalid_context));
+    }, "Momentum SGD should reject a non-finite scheduled learning rate");
+    require(same_parameters(network, before_invalid_step),
+        "invalid Momentum SGD schedules should not mutate the network");
+
+    MLP trainer_network = make_zero_network({ 1, 1 });
+    TrainingConfig training_config;
+    training_config.max_iterations = 2;
+    training_config.max_epochs.reset();
+
+    const TrainingReport report = train(
+        trainer_network,
+        batch,
+        make_momentum_sgd(options),
+        training_config,
+        objective
+    );
+
+    require(report.completed,
+        "trainer should complete with Momentum SGD");
+    require(report.stop_reason == TrainingStopReason::MaxIterations,
+        "Momentum SGD trainer integration should stop at its iteration limit");
+    require(report.steps == 2,
+        "trainer should perform both configured Momentum SGD updates");
+    require(report.optimizer_name == "MomentumSGD",
+        "trainer should report the Momentum SGD optimizer name");
+    require(configured_momentum.name == optimizer->name(),
+        "Momentum SGD spec and optimizer should report the same name");
+
+    std::cout << "[PASS] Momentum SGD state, validation, reset, and trainer integration\n";
+}
+
 void run_regularization_coefficient_checks()
 {
     const MLP network = make_zero_network({ 1, 1 });
@@ -1762,6 +1942,64 @@ void run_xor_training_checks()
 
     std::cout << "[PASS] deterministic fixed full-batch XOR training: "
               << initial_loss << " -> " << final_loss << '\n';
+}
+
+void run_train_convergence_checks()
+{
+    const Dataset xor_dataset = make_xor_dataset();
+    MLP network = make_mlp({ 2, 4, 1 }, 42);
+
+    SGDOptions options;
+    options.learning_rate_schedule = [](std::size_t) {
+        return 1.0;
+    };
+
+    TrainingConfig config;
+    config.max_iterations = 20000;
+    config.max_epochs.reset();
+    config.gradient_tolerance.reset();
+    config.parameter_change_tolerance.reset();
+    config.shuffle = false;
+    config.record_history = true;
+
+    const TrainingReport report = train(
+        network,
+        xor_dataset,
+        make_sgd(options),
+        config,
+        make_objective_config(make_binary_cross_entropy_objective())
+    );
+
+    require(report.completed,
+        "public train() convergence should report completed training");
+    require(report.stop_reason == TrainingStopReason::MaxIterations,
+        "public train() convergence should stop at its iteration limit");
+    require(report.steps > 0,
+        "public train() convergence should perform at least one update");
+    require(report.steps == *config.max_iterations,
+        "public train() convergence should use the configured iteration limit");
+    require(std::isfinite(report.initial_loss) &&
+            std::isfinite(report.final_loss),
+        "public train() convergence should report finite endpoint losses");
+    require(report.final_loss < report.initial_loss,
+        "public train() convergence should reduce the XOR objective");
+    require(report.losses.size() == report.steps &&
+            report.gradient_norms.size() == report.steps &&
+            report.parameter_changes.size() == report.steps,
+        "public train() convergence should record one history entry per update");
+
+    for (const Sample& sample : xor_dataset) {
+        const ForwardCache cache = forward_pass(network, sample.input);
+        const double prediction = cache.activations.back().front();
+        const bool predicted_label = prediction >= 0.5;
+        const bool expected_label = sample.target.front() >= 0.5;
+
+        require(predicted_label == expected_label,
+            "public train() convergence should classify every XOR sample");
+    }
+
+    std::cout << "[PASS] public train() XOR convergence: "
+              << report.initial_loss << " -> " << report.final_loss << '\n';
 }
 
 void run_batch_gradient_checks()
@@ -3365,6 +3603,60 @@ void phase_one_training_config_skeleton()
     std::cout << "[PASS] future-ready training configuration contract\n";
 }
 
+void run_public_training_api_checks()
+{
+    TrainingReport report;
+    report.completed = true;
+    report.stop_reason = TrainingStopReason::MaxEpochs;
+    report.optimizer_name = "TestOptimizer";
+    report.epochs_completed = 4;
+    report.steps = 12;
+    report.initial_loss = 1.5;
+    report.final_loss = 0.25;
+    report.final_gradient_norm = 0.125;
+    report.final_parameter_change = 0.0625;
+
+    std::ostringstream serialized;
+    serialized << report;
+    const std::string text = serialized.str();
+
+    require(text.find("OPTIMIZER: TestOptimizer") != std::string::npos,
+        "TrainingReport streaming should include the optimizer name");
+    require(text.find("COMPLETED: TRUE") != std::string::npos,
+        "TrainingReport streaming should include completion status");
+    require(text.find("STOP REASON: MAX EPOCHS") != std::string::npos,
+        "TrainingReport streaming should include the readable stop reason");
+    require(text.find("EPOCHS COMPLETED: 4") != std::string::npos,
+        "TrainingReport streaming should include completed epochs");
+    require(text.find("FINAL LOSS: 0.25") != std::string::npos,
+        "TrainingReport streaming should include final loss");
+    require(
+        trainingStopReasonToString(
+            TrainingStopReason::ParameterChangeTolerance
+        ) == "Parameter Change Tolerance",
+        "stop-reason conversion should expose readable names"
+    );
+
+    const ObjectiveConfig single_regularizer = make_objective_config(
+        make_mean_squared_error_objective(),
+        make_l2_regularization(0.25)
+    );
+
+    require(single_regularizer.regularizers.size() == 1,
+        "single-regularizer objective overload should store one term");
+    require(single_regularizer.regularizers.front().name ==
+            "L2 Regularization",
+        "single-regularizer objective overload should preserve the term");
+    require_near(
+        single_regularizer.regularizers.front().coefficient,
+        0.25,
+        1e-12,
+        "single-regularizer objective overload should preserve its coefficient"
+    );
+
+    std::cout << "[PASS] public training report and objective-construction APIs\n";
+}
+
 Dataset make_training_contract_dataset()
 {
     return Dataset{
@@ -3553,6 +3845,27 @@ void run_training_contract_checks()
             "epoch-boundary iteration limit should perform exactly one update");
         require(report.epochs_completed == 1,
             "a fully consumed final batch should count as a completed epoch");
+    }
+
+    {
+        auto trace = std::make_shared<TrainingTrace>();
+        MLP network = make_zero_network({ 1, 1 });
+        TrainingConfig config;
+        config.max_epochs = 1;
+        config.max_iterations = 100;
+
+        const TrainingReport report = train(
+            network,
+            dataset,
+            make_recording_optimizer(trace),
+            config,
+            make_objective_config()
+        );
+
+        require(report.stop_reason == TrainingStopReason::MaxEpochs,
+            "epoch limit should be reported when it is reached before the iteration limit");
+        require(report.steps == 1 && report.epochs_completed == 1,
+            "epoch-limited training should report its completed full-batch epoch");
     }
 
     {
@@ -3825,12 +4138,14 @@ void run_all_self_checks()
     run_objective_checks();
     run_mse_objective_checks();
     run_sgd_optimizer_checks();
+    run_momentum_sgd_optimizer_checks();
     run_regularization_coefficient_checks();
     run_zero_gradient_checks();
     run_backward_checks();
     run_objective_backward_checks();
     run_objective_batch_gradient_checks();
     run_xor_training_checks();
+    run_train_convergence_checks();
     run_batch_gradient_checks();
     run_gradient_check_checks();
     run_vector_algebra_checks();
@@ -3841,6 +4156,7 @@ void run_all_self_checks()
     run_wolfe_candidate_checks();
     run_backtracking_wolfe_checks();
     phase_one_training_config_skeleton();
+    run_public_training_api_checks();
     run_training_contract_checks();
     run_phase_one_stub_checks();
 }

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <iosfwd>
 #include <vector>
 
 #include "objective_functions.hpp"
@@ -54,12 +55,25 @@ struct SGDOptions {
     };
 };
 
+struct MomentumSGDOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {
+            return 0.01;
+        }
+    };
+
+    double momentum{ 0.5 };
+};
+
 OptimizerSpec make_sgd(
     SGDOptions options = {}
 );
 
+OptimizerSpec make_momentum_sgd(MomentumSGDOptions options = {});
+
 namespace Optimizers {
     extern const OptimizerSpec SGD;
+    extern const OptimizerSpec MomentumSGD;
     extern const OptimizerSpec AdaGrad;
     extern const OptimizerSpec RMSProp;
     extern const OptimizerSpec Adam;
@@ -82,6 +96,17 @@ enum class TrainingStopReason {
     OptimizerStopped
 };
 
+/// <summary>
+/// <para>BatchMode : FullBatch, MiniBatch, or Stochastic</para>
+/// <para>Batch Size : Size of Training Batch</para>
+/// <para>Max Iterations (Optional) : Maximum Number of Training Iterations</para>
+/// <para>Max Epochs (Optional, Default 1) : Maxmimum Number of Training Epochs (Full Passes Through Dataset)</para>
+/// <para>Gradient Tolerance (Optional) : Epsilon for Infinity Norm of Gradient </para>
+/// <para>Parameter Change Tolerance (Optional) : Epsilon for Infinity Norm of Step</para>
+/// <para>Shuffle (Default False) : To Shuffle Dataset or Not</para>
+/// <para>Shuffle Seed (Default 0) : Seed for Shuffling</para>
+/// <para>Record History (Default True) : T/F Whether to record history or not</para>
+/// </summary>
 struct TrainingConfig {
     BatchMode batch_mode{ BatchMode::FullBatch };
     std::size_t batch_size{};
@@ -99,6 +124,20 @@ struct TrainingConfig {
     bool record_history{ true };
 };
 
+/// <summary>
+/// <para>Completed: T/F did training complete?</para>
+/// <para>Stop Reason: TrainingStopReason</para>
+/// <para>Optimizer Name: String associated with Optimizer</para>
+/// <para>Epochs Completed: Number of epochs completed</para>
+/// <para>Steps: Number of steps taken</para>
+/// <para>Initial Loss: The initial loss</para>
+/// <para>Final Loss: The final loss after training</para>
+/// <para>Final Gradient Norm: The infinity norm of the gradient vector</para>
+/// <para>Final Parameter Change: The final change in parameter</para>
+/// <para>Losses: Vector of doubles of actual individual losses, size of [ToDo]</para>
+/// <para>Gradient Norms: Vector of the Gradient Norms</para>
+/// <para>Parameter Changes: Vector of the Parameter Changes</para>
+/// </summary>
 struct TrainingReport {
     bool completed{};
     TrainingStopReason stop_reason{ TrainingStopReason::NotStarted };
@@ -130,10 +169,6 @@ void validate_training_config(
     const TrainingConfig& config
 );
 
-TrainingReport train(
-    MLP& network,
-    const Dataset& dataset,
-    const OptimizerSpec& optimizer,
-    const TrainingConfig& config,
-    const ObjectiveConfig& objective
-);
+std::ostream& operator<<(std::ostream& output, const TrainingReport& report);
+
+std::string trainingStopReasonToString(TrainingStopReason reason);

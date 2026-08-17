@@ -1,22 +1,10 @@
-#include "optimizers.hpp"
+#include "train.hpp"
 
-#include <stdexcept>
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <random>
 #include <stdexcept>
 #include <utility>
-
-void validate_training_inputs(const MLP& network, const Dataset& dataset, const OptimizerSpec& optimizer, const TrainingConfig& config, const ObjectiveConfig& objective);
-
-std::size_t get_effective_batch_size(const TrainingConfig& config, const std::size_t dataset_size);
-
-std::vector<std::size_t> make_epoch_order(const std::size_t dataset_size, const TrainingConfig& config, std::mt19937& random_engine);
-
-Dataset make_batch(const Dataset& dataset, const std::vector<std::size_t>& order, const std::size_t begin, const std::size_t end);
-
-double parameter_change(const MLP& before, const MLP& after);
 
 
 TrainingReport train(
@@ -122,14 +110,18 @@ TrainingReport train(
                 report.stop_reason = TrainingStopReason::MaxIterations;
                 return report;
             }
+            if (completed_epoch &&
+                maximum_epochs.has_value() &&
+                epoch >= *maximum_epochs) {
+                report.completed = true;
+                report.stop_reason = TrainingStopReason::MaxEpochs;
+                return report;
+            }
         }
     }
-
-    report.completed = true;
-    report.stop_reason =
-        maximum_iterations.has_value() ? TrainingStopReason::MaxIterations : TrainingStopReason::MaxEpochs;
-
-    return report;
+    throw std::logic_error(
+        "Training loop exited without a stop reason."
+    );
 }
 
 void validate_training_inputs(

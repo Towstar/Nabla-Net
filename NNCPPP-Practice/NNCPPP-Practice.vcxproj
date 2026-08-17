@@ -141,6 +141,7 @@
     <ClInclude Include="mlp.hpp" />
     <ClInclude Include="objective_functions.hpp" />
     <ClInclude Include="optimizers.hpp" />
+    <ClInclude Include="self_checks.hpp" />
     <ClInclude Include="train.hpp" />
     <ClInclude Include="wolfe_analysis.hpp" />
   </ItemGroup>

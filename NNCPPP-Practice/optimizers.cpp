@@ -1,9 +1,14 @@
 #include "optimizers.hpp"
 
 #include <cmath>
+#include <cctype>
 #include <memory>
+#include <ostream>
 #include <stdexcept>
 #include <utility>
+#include <iostream>
+#include <ranges>
+#include <algorithm>
 
 #pragma region Optimizer Implementations and Factories
 
@@ -100,6 +105,117 @@ namespace
         }
     };
 
+    class MomentumSGDOptimizer final : public Optimizer
+    {
+    public:
+        explicit MomentumSGDOptimizer(LearningRateSchedule schedule, double momentum_coefficient=0.5)
+            : learning_rate_schedule_(std::move(schedule))
+        {
+            if (!learning_rate_schedule_) {
+                throw std::invalid_argument(
+                    "Momentum SGD learning-rate schedule cannot be empty."
+                );
+            }
+            if (momentum_coefficient < 0 || momentum_coefficient >= 1)
+                throw std::invalid_argument("Momentum coefficient must be in the range [0,1).");
+            if (!std::isfinite(momentum_coefficient))
+                throw std::invalid_argument("Momentum coefficient must be finite.");
+            _momentum_coefficient = momentum_coefficient;
+        }
+
+        const char* name() const noexcept override
+        {
+            return "MomentumSGD";
+        }
+
+        void reset(const MLP& network) override
+        {
+            validate_network(network);
+            _velocity = make_zero_gradients_like(network);
+            update_index_ = 0;
+        }
+
+        TrainingStepResult step(OptimizerContext& context) override
+        {
+            validate_network(context.network);
+            validate_objective_config(context.objective);
+            validate_gradients_like(context.network, _velocity);
+
+            if (context.batch.empty()) {
+                throw std::invalid_argument(
+                    "Momentum SGD batch cannot be empty."
+                );
+            }
+
+            validate_gradients_like(
+                context.network,
+                context.current_gradient
+            );
+
+            if (!std::isfinite(context.current_loss)) {
+                throw std::invalid_argument(
+                    "Current loss must be finite."
+                );
+            }
+
+            return _step(context);
+        }
+
+    private:
+        NetworkGradients _velocity;
+        double _momentum_coefficient{};
+
+        LearningRateSchedule learning_rate_schedule_;
+        std::size_t update_index_{};
+
+        TrainingStepResult _step(OptimizerContext& context)
+        {
+            const double learning_rate =
+                learning_rate_schedule_(update_index_);
+
+            if (!learning_rate_is_valid(learning_rate)) {
+                throw std::invalid_argument(
+                    "Learning-rate schedule produced an invalid rate."
+                );
+            }
+
+            TrainingStepResult result{};
+            result.previous_loss = context.current_loss;
+            result.gradient_norm =
+                gradient_l2_norm(context.current_gradient);
+
+            MLP candidate = context.network;
+
+            NetworkGradients next_velocity = _velocity;
+
+            std::size_t layer_idx = 0;
+            
+            for (LayerGradients& next_layer : next_velocity.layers) {
+                const LayerGradients& old_layer = _velocity.layers[layer_idx];
+                const LayerGradients& gradient_layer = context.current_gradient.layers[layer_idx];
+                
+                for (std::size_t idx = 0; idx < next_layer.weights.size(); idx++)
+                    next_layer.weights[idx] = _momentum_coefficient * old_layer.weights[idx] + gradient_layer.weights[idx];
+            
+                for (std::size_t idx = 0; idx < next_layer.biases.size(); idx++)
+                    next_layer.biases[idx] = _momentum_coefficient * old_layer.biases[idx] + gradient_layer.biases[idx];
+                layer_idx++;
+            }
+            
+            apply_gradient(candidate, next_velocity, learning_rate);
+            const double new_loss = objective_loss(candidate, context.batch, context.objective);
+            result.new_loss = new_loss;
+
+            context.network = std::move(candidate);
+            _velocity = std::move(next_velocity);
+
+            update_index_++;
+
+            result.updated = true;
+            return result;
+        }
+    };
+
     class AdaGradOptimizer final : public Optimizer
     {
     public:
@@ -149,6 +265,17 @@ namespace
         );
     }
 
+    std::unique_ptr<Optimizer> make_momentum_sgd_instance(
+        LearningRateSchedule schedule,
+        double momentum_coefficient
+    )
+    {
+        return std::make_unique<MomentumSGDOptimizer>(
+            std::move(schedule),
+            momentum_coefficient
+        );
+    }
+
     std::unique_ptr<Optimizer> make_adagrad_optimizer();
     std::unique_ptr<Optimizer> make_rmsprop_optimizer();
     std::unique_ptr<Optimizer> make_adam_optimizer();
@@ -176,12 +303,35 @@ OptimizerSpec make_sgd(SGDOptions options)
     );
 }
 
+OptimizerSpec make_momentum_sgd(MomentumSGDOptions options) {
+    if (!options.learning_rate_schedule) {
+        throw std::invalid_argument(
+            "Momentum SGD learning-rate schedule cannot be empty."
+        );
+    }
+
+    const LearningRateSchedule schedule =
+        options.learning_rate_schedule;
+    const double momentum =
+        options.momentum;
+
+    return make_custom_optimizer(
+        "MomentumSGD",
+        OptimizerRequirement::MiniBatchCompatible,
+        [schedule, momentum] {
+            return make_momentum_sgd_instance(schedule, momentum);
+        }
+    );
+}
+
 #pragma endregion
 
 #pragma region Built-in Optimizer Specifications
 
 namespace Optimizers {
     const OptimizerSpec SGD = make_sgd();
+
+    const OptimizerSpec MomentumSGD = make_momentum_sgd();
 
     const OptimizerSpec AdaGrad{
         "AdaGrad",
@@ -282,7 +432,7 @@ void validate_optimizer_spec(const OptimizerSpec& optimizer)
 
 #pragma endregion
 
-#pragma region Training Configuration
+#pragma region Training Configuration & Report Formatting
 
 void validate_training_config(const TrainingConfig& config)
 {
@@ -356,6 +506,49 @@ void validate_training_config(const TrainingConfig& config)
         config.parameter_change_tolerance,
         "Parameter-change tolerance"
     );
+}
+
+std::ostream& operator<<(std::ostream& output, const TrainingReport& report)
+{
+    std::string stop_reason =
+        trainingStopReasonToString(report.stop_reason);
+
+    std::transform(stop_reason.begin(), stop_reason.end(), stop_reason.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::toupper(character));
+        }
+    );
+
+    output << "OPTIMIZER: " << report.optimizer_name << std::endl
+           << "COMPLETED: " << (report.completed ? "TRUE" : "FALSE") << std::endl
+           << "STOP REASON: " << stop_reason << std::endl 
+           << "EPOCHS COMPLETED: " << report.epochs_completed << std::endl
+           << "STEPS: " << report.steps << std::endl
+           << "INITIAL LOSS: " << report.initial_loss << std::endl
+           << "FINAL LOSS: " << report.final_loss << std::endl
+           << "FINAL GRADIENT NORM: " << report.final_gradient_norm << std::endl
+           << "FINAL PARAMETER CHANGE: " << report.final_parameter_change << std::endl;
+
+    return output;
+}
+
+std::string trainingStopReasonToString(TrainingStopReason reason) {
+    switch (reason) {
+    case TrainingStopReason::NotStarted:
+        return "Not Started";
+    case TrainingStopReason::MaxIterations:
+        return "Max Iterations";
+    case TrainingStopReason::MaxEpochs:
+        return "Max Epochs";
+    case TrainingStopReason::GradientTolerance:
+        return "Gradient Tolerance";
+    case TrainingStopReason::ParameterChangeTolerance:
+        return "Parameter Change Tolerance";
+    case TrainingStopReason::OptimizerStopped:
+        return "Optimizer Stopped";
+    default:
+        throw std::invalid_argument("TrainingStopReason Provided does not have a valid string overload");
+    }
 }
 
 #pragma endregion
