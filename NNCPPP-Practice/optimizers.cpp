@@ -219,9 +219,121 @@ namespace
     class AdaGradOptimizer final : public Optimizer
     {
     public:
-        const char* name() const noexcept override;
-        void reset(const MLP& network) override;
-        TrainingStepResult step(OptimizerContext& context) override;
+        explicit AdaGradOptimizer(AdaGradOptions options) {
+            if (!options.learning_rate_schedule) {
+                throw std::invalid_argument(
+                    "AdaGrad learning-rate schedule cannot be empty."
+                );
+            }
+            if (options.epsilon < 0.0 || !std::isfinite(options.epsilon))
+                throw std::invalid_argument(
+                    "Epsilon cannot be negative"
+                );
+            schedule = options.learning_rate_schedule;
+            epsilon = options.epsilon;
+        }
+        const char* name() const noexcept override {
+            return "AdaGrad";
+        }
+        void reset(const MLP& network) override {
+            validate_network(network);
+            accumulated_squared_gradient = make_zero_gradients_like(network);
+            update_index = 0;
+        }
+        TrainingStepResult step(OptimizerContext& context) override {
+
+            validate_network(context.network);
+            validate_objective_config(context.objective);
+            validate_gradients_like(context.network, context.current_gradient);
+
+            if (context.batch.empty()) {
+                throw std::invalid_argument(
+                    "Momentum SGD batch cannot be empty."
+                );
+            }
+            if (!std::isfinite(context.current_loss)) {
+                throw std::invalid_argument(
+                    "Current loss must be finite."
+                );
+            }
+
+            return _step(context);
+        }
+    private:
+        size_t update_index{ 0 };
+        NetworkGradients accumulated_squared_gradient;
+        double epsilon{ 0.01 };
+        LearningRateSchedule schedule;
+
+        TrainingStepResult _step(OptimizerContext& context) {
+
+            MLP candidate = context.network;
+            const NetworkGradients& gradient = context.current_gradient;
+
+            NetworkGradients next_accumulated = accumulated_squared_gradient;
+            
+            const double learning_rate = schedule(update_index);
+            
+            if (!learning_rate_is_valid(learning_rate)) {
+                throw std::invalid_argument(
+                    "Learning-rate schedule produced an invalid rate."
+                );
+            }
+
+            for (std::size_t layer_index = 0; layer_index < gradient.layers.size(); layer_index++) {
+                const LayerGradients& grad_layer = gradient.layers[layer_index];
+                LayerGradients& acx_layer = next_accumulated.layers[layer_index];
+                DenseLayer& candidate_layer = candidate.layers[layer_index];
+
+                for (std::size_t i = 0; i < grad_layer.weights.size(); i++) {
+                    const double g = grad_layer.weights[i];
+                    acx_layer.weights[i] += g * g;
+
+                    if (!std::isfinite(acx_layer.weights[i])) {
+                        throw std::overflow_error(
+                            "AdaGrad squared-gradient accumulator overflowed."
+                        );
+                    }
+
+                    const double update = learning_rate * g / (std::sqrt(acx_layer.weights[i]) + epsilon);
+                    candidate_layer.weights[i] -= update;
+                }
+
+                for (std::size_t i = 0; i < grad_layer.biases.size(); i++) {
+                    const double g = grad_layer.biases[i];
+                    acx_layer.biases[i] += g * g;
+
+                    if (!std::isfinite(acx_layer.biases[i])) {
+                        throw std::overflow_error(
+                            "AdaGrad squared-gradient accumulator overflowed."
+                        );
+                    }
+
+                    const double update = learning_rate * g / (std::sqrt(acx_layer.biases[i]) + epsilon);
+                    candidate_layer.biases[i] -= update;
+                }
+            }
+
+            validate_network(candidate);
+            const double new_loss = objective_loss(candidate, context.batch, context.objective);
+
+            if (!std::isfinite(new_loss))
+                throw std::runtime_error("AdaGrad produced a non-finite loss.");
+
+            context.network = std::move(candidate);
+            accumulated_squared_gradient = std::move(next_accumulated);
+
+            update_index++;
+
+            TrainingStepResult result{};
+            result.updated = true;
+            result.previous_loss = context.current_loss;
+            result.new_loss = new_loss;
+            result.gradient_norm =
+                gradient_l2_norm(context.current_gradient);
+
+            return result;
+        }
     };
 
     class RMSPropOptimizer final : public Optimizer
@@ -276,7 +388,12 @@ namespace
         );
     }
 
-    std::unique_ptr<Optimizer> make_adagrad_optimizer();
+    std::unique_ptr<Optimizer> make_adagrad_instance(AdaGradOptions options) {
+        return std::make_unique<AdaGradOptimizer>(
+            std::move(options)
+        );
+    }
+    
     std::unique_ptr<Optimizer> make_rmsprop_optimizer();
     std::unique_ptr<Optimizer> make_adam_optimizer();
     std::unique_ptr<Optimizer> make_adamw_optimizer();
@@ -324,6 +441,27 @@ OptimizerSpec make_momentum_sgd(MomentumSGDOptions options) {
     );
 }
 
+OptimizerSpec make_adagrad(AdaGradOptions options) {
+    if (!options.learning_rate_schedule) {
+        throw std::invalid_argument(
+            "Adagrad learning-rate schedule cannot be empty."
+        );
+    }
+    if (!options.epsilon) {
+        throw std::invalid_argument(
+            "Adagrad epsilon must be defined."
+        );
+    }
+    if (!std::isfinite(options.epsilon) || options.epsilon < 0.0) {
+        throw std::invalid_argument(
+            "epsilon must be finite and positive."
+        );
+    }
+    const LearningRateSchedule schedule = options.learning_rate_schedule;
+    const double epsilon = options.epsilon;
+    return make_custom_optimizer("AdaGrad", OptimizerRequirement::MiniBatchCompatible, [schedule, epsilon]() {return make_adagrad_instance(AdaGradOptions{ schedule, epsilon }); });
+}
+
 #pragma endregion
 
 #pragma region Built-in Optimizer Specifications
@@ -333,11 +471,7 @@ namespace Optimizers {
 
     const OptimizerSpec MomentumSGD = make_momentum_sgd();
 
-    const OptimizerSpec AdaGrad{
-        "AdaGrad",
-        OptimizerRequirement::MiniBatchCompatible,
-        {}
-    };
+    const OptimizerSpec AdaGrad = make_adagrad();
 
     const OptimizerSpec RMSProp{
         "RMSProp",

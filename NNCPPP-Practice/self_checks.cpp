@@ -1353,6 +1353,419 @@ void run_momentum_sgd_optimizer_checks()
     std::cout << "[PASS] Momentum SGD state, validation, reset, and trainer integration\n";
 }
 
+void run_adagrad_optimizer_checks()
+{
+    MLP network = make_zero_network({ 1, 1 });
+    network.layers[0].weights = { 0.5 };
+    network.layers[0].biases = { 0.25 };
+
+    const MLP initial_network = network;
+    const Dataset batch{
+        { { 1.0 }, { 0.0 } }
+    };
+    const ObjectiveConfig objective = make_objective_config(
+        make_mean_squared_error_objective()
+    );
+
+    NetworkGradients gradient = make_zero_gradients_like(network);
+    gradient.layers[0].weights[0] = 0.2;
+    gradient.layers[0].biases[0] = 0.6;
+
+    validate_optimizer_spec(Optimizers::AdaGrad);
+    require(Optimizers::AdaGrad.requirement ==
+            OptimizerRequirement::MiniBatchCompatible,
+        "AdaGrad should support full-batch, mini-batch, and stochastic training");
+    require(static_cast<bool>(Optimizers::AdaGrad.make),
+        "AdaGrad should expose a factory after implementation");
+
+    std::unique_ptr<Optimizer> optimizer = Optimizers::AdaGrad.make();
+    require(optimizer != nullptr,
+        "AdaGrad factory should create an optimizer instance");
+    require(std::string(optimizer->name()) == "AdaGrad",
+        "AdaGrad should report its public optimizer name");
+
+    optimizer->reset(network);
+
+    constexpr double learning_rate = 0.01;
+    constexpr double epsilon = 1e-8;
+    const auto expected_step = [learning_rate, epsilon](
+        const double value,
+        const std::size_t update_count
+    ) {
+        return learning_rate * value /
+            (std::sqrt(static_cast<double>(update_count) * value * value) +
+             epsilon);
+    };
+
+    const double first_loss = objective_loss(network, batch, objective);
+    OptimizerContext first_context{
+        network,
+        batch,
+        objective,
+        first_loss,
+        gradient
+    };
+
+    const TrainingStepResult first_result = optimizer->step(first_context);
+
+    require(first_result.updated,
+        "AdaGrad should report a successful first update");
+    require_near(first_result.previous_loss, first_loss, 1e-12,
+        "AdaGrad should preserve the supplied previous loss");
+    require_near(first_result.gradient_norm, std::sqrt(0.4), 1e-12,
+        "AdaGrad should report the current gradient norm");
+    require_near(
+        network.layers[0].weights[0],
+        initial_network.layers[0].weights[0] - expected_step(0.2, 1),
+        1e-12,
+        "AdaGrad first weight update should use the accumulated squared gradient"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        initial_network.layers[0].biases[0] - expected_step(0.6, 1),
+        1e-12,
+        "AdaGrad first bias update should use the accumulated squared gradient"
+    );
+    require(std::isfinite(first_result.new_loss),
+        "AdaGrad should report a finite post-update loss");
+
+    const MLP after_first_update = network;
+    const double second_loss = objective_loss(network, batch, objective);
+    OptimizerContext second_context{
+        network,
+        batch,
+        objective,
+        second_loss,
+        gradient
+    };
+
+    const TrainingStepResult second_result = optimizer->step(second_context);
+
+    require(second_result.updated,
+        "AdaGrad should report a successful second update");
+    require_near(
+        network.layers[0].weights[0],
+        after_first_update.layers[0].weights[0] - expected_step(0.2, 2),
+        1e-12,
+        "AdaGrad should accumulate squared weight gradients across updates"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        after_first_update.layers[0].biases[0] - expected_step(0.6, 2),
+        1e-12,
+        "AdaGrad should accumulate squared bias gradients across updates"
+    );
+
+    const MLP before_reset_update = network;
+    optimizer->reset(network);
+    const double reset_loss = objective_loss(network, batch, objective);
+    OptimizerContext reset_context{
+        network,
+        batch,
+        objective,
+        reset_loss,
+        gradient
+    };
+    static_cast<void>(optimizer->step(reset_context));
+
+    require_near(
+        network.layers[0].weights[0],
+        before_reset_update.layers[0].weights[0] - expected_step(0.2, 1),
+        1e-12,
+        "AdaGrad reset should clear the accumulated weight history"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        before_reset_update.layers[0].biases[0] - expected_step(0.6, 1),
+        1e-12,
+        "AdaGrad reset should clear the accumulated bias history"
+    );
+
+    const MLP before_invalid_gradient = network;
+    NetworkGradients invalid_gradient = gradient;
+    invalid_gradient.layers[0].weights[0] =
+        std::numeric_limits<double>::quiet_NaN();
+    const double invalid_gradient_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext invalid_gradient_context{
+        network,
+        batch,
+        objective,
+        invalid_gradient_loss,
+        invalid_gradient
+    };
+
+    require_throws([&optimizer, &invalid_gradient_context] {
+        static_cast<void>(optimizer->step(invalid_gradient_context));
+    }, "AdaGrad should reject non-finite gradients");
+    require(same_parameters(network, before_invalid_gradient),
+        "invalid AdaGrad gradients should not mutate the network");
+
+    const MLP before_empty_batch = network;
+    const Dataset empty_batch{};
+    OptimizerContext empty_batch_context{
+        network,
+        empty_batch,
+        objective,
+        0.0,
+        gradient
+    };
+
+    require_throws([&optimizer, &empty_batch_context] {
+        static_cast<void>(optimizer->step(empty_batch_context));
+    }, "AdaGrad should reject an empty batch");
+    require(same_parameters(network, before_empty_batch),
+        "an empty AdaGrad batch should not mutate the network");
+
+    MLP trainer_network = make_zero_network({ 1, 1 });
+    const MLP trainer_initial_network = trainer_network;
+    const Dataset trainer_batch{
+        { { 1.0 }, { 1.0 } }
+    };
+    TrainingConfig training_config;
+    training_config.max_iterations = 2;
+    training_config.max_epochs.reset();
+
+    const TrainingReport report = train(
+        trainer_network,
+        trainer_batch,
+        Optimizers::AdaGrad,
+        training_config,
+        objective
+    );
+
+    require(report.completed,
+        "trainer should complete with AdaGrad");
+    require(report.stop_reason == TrainingStopReason::MaxIterations,
+        "AdaGrad trainer integration should stop at its iteration limit");
+    require(report.steps == 2,
+        "trainer should perform both configured AdaGrad updates");
+    require(report.optimizer_name == "AdaGrad",
+        "training report should preserve the AdaGrad optimizer name");
+    require(std::isfinite(report.final_loss),
+        "AdaGrad trainer integration should report a finite final loss");
+    require(any_weight_differs(trainer_network, trainer_initial_network),
+        "AdaGrad trainer integration should update the network");
+
+    {
+        MLP configured_network = initial_network;
+        std::vector<std::size_t> observed_schedule_steps;
+
+        AdaGradOptions options;
+        options.epsilon = 1e-8;
+        options.learning_rate_schedule =
+            [&observed_schedule_steps](const std::size_t update_index) {
+                observed_schedule_steps.push_back(update_index);
+                return update_index == 0 ? 0.5 : 0.25;
+            };
+
+        const OptimizerSpec configured_spec = make_adagrad(options);
+        validate_optimizer_spec(configured_spec);
+
+        std::unique_ptr<Optimizer> configured_optimizer =
+            configured_spec.make();
+        require(configured_optimizer != nullptr,
+            "configured AdaGrad factory should create an optimizer");
+        configured_optimizer->reset(configured_network);
+
+        const double configured_first_loss = objective_loss(
+            configured_network,
+            batch,
+            objective
+        );
+        OptimizerContext configured_first_context{
+            configured_network,
+            batch,
+            objective,
+            configured_first_loss,
+            gradient
+        };
+        static_cast<void>(configured_optimizer->step(configured_first_context));
+
+        const auto configured_step = [](const double value,
+                                        const std::size_t update_count,
+                                        const double rate) {
+            return rate * value /
+                (std::sqrt(static_cast<double>(update_count) * value * value) +
+                 1e-8);
+        };
+
+        require_near(
+            configured_network.layers[0].weights[0],
+            initial_network.layers[0].weights[0] -
+                configured_step(0.2, 1, 0.5),
+            1e-12,
+            "AdaGrad should apply a configured first learning rate to weights");
+        require_near(
+            configured_network.layers[0].biases[0],
+            initial_network.layers[0].biases[0] -
+                configured_step(0.6, 1, 0.5),
+            1e-12,
+            "AdaGrad should apply a configured first learning rate to biases");
+
+        const double configured_second_loss = objective_loss(
+            configured_network,
+            batch,
+            objective
+        );
+        OptimizerContext configured_second_context{
+            configured_network,
+            batch,
+            objective,
+            configured_second_loss,
+            gradient
+        };
+        static_cast<void>(configured_optimizer->step(configured_second_context));
+
+        require_near(
+            configured_network.layers[0].weights[0],
+            initial_network.layers[0].weights[0] -
+                configured_step(0.2, 1, 0.5) -
+                configured_step(0.2, 2, 0.25),
+            1e-12,
+            "AdaGrad should combine the schedule with accumulated history"
+        );
+        require_near(
+            configured_network.layers[0].biases[0],
+            initial_network.layers[0].biases[0] -
+                configured_step(0.6, 1, 0.5) -
+                configured_step(0.6, 2, 0.25),
+            1e-12,
+            "AdaGrad should apply scheduled accumulated updates to biases"
+        );
+
+        configured_optimizer->reset(configured_network);
+        const double configured_reset_loss = objective_loss(
+            configured_network,
+            batch,
+            objective
+        );
+        OptimizerContext configured_reset_context{
+            configured_network,
+            batch,
+            objective,
+            configured_reset_loss,
+            gradient
+        };
+        static_cast<void>(configured_optimizer->step(configured_reset_context));
+
+        require(observed_schedule_steps ==
+                std::vector<std::size_t>{ 0, 1, 0 },
+            "AdaGrad reset should restart the learning-rate schedule");
+    }
+
+    {
+        AdaGradOptions empty_schedule;
+        empty_schedule.learning_rate_schedule = {};
+        require_throws([&empty_schedule] {
+            static_cast<void>(make_adagrad(empty_schedule));
+        }, "AdaGrad should reject an empty learning-rate schedule");
+
+        for (const double invalid_epsilon : {
+                 0.0,
+                 -1.0,
+                 std::numeric_limits<double>::quiet_NaN(),
+                 std::numeric_limits<double>::infinity()
+             }) {
+            AdaGradOptions invalid_options;
+            invalid_options.epsilon = invalid_epsilon;
+
+            require_throws([&invalid_options] {
+                static_cast<void>(make_adagrad(invalid_options));
+            }, "AdaGrad should reject an invalid epsilon");
+        }
+    }
+
+    {
+        AdaGradOptions invalid_schedule_options;
+        invalid_schedule_options.learning_rate_schedule =
+            [](const std::size_t) {
+                return std::numeric_limits<double>::quiet_NaN();
+            };
+
+        const OptimizerSpec invalid_schedule_spec =
+            make_adagrad(invalid_schedule_options);
+        std::unique_ptr<Optimizer> invalid_schedule_optimizer =
+            invalid_schedule_spec.make();
+        invalid_schedule_optimizer->reset(network);
+
+        const MLP before_invalid_schedule = network;
+        const double invalid_schedule_loss = objective_loss(
+            network,
+            batch,
+            objective
+        );
+        OptimizerContext invalid_schedule_context{
+            network,
+            batch,
+            objective,
+            invalid_schedule_loss,
+            gradient
+        };
+
+        require_throws([&invalid_schedule_optimizer,
+                        &invalid_schedule_context] {
+            static_cast<void>(invalid_schedule_optimizer->step(
+                invalid_schedule_context
+            ));
+        }, "AdaGrad should reject a non-finite scheduled learning rate");
+        require(same_parameters(network, before_invalid_schedule),
+            "invalid AdaGrad schedules should not mutate the network");
+    }
+
+    {
+        std::unique_ptr<Optimizer> overflow_optimizer =
+            Optimizers::AdaGrad.make();
+        overflow_optimizer->reset(network);
+
+        NetworkGradients overflow_gradient =
+            make_zero_gradients_like(network);
+        overflow_gradient.layers[0].weights[0] =
+            std::numeric_limits<double>::max();
+
+        const MLP before_overflow = network;
+        const double overflow_loss = objective_loss(
+            network,
+            batch,
+            objective
+        );
+        OptimizerContext overflow_context{
+            network,
+            batch,
+            objective,
+            overflow_loss,
+            overflow_gradient
+        };
+
+        require_throws([&overflow_optimizer, &overflow_context] {
+            static_cast<void>(overflow_optimizer->step(overflow_context));
+        }, "AdaGrad should reject squared-gradient accumulator overflow");
+        require(same_parameters(network, before_overflow),
+            "AdaGrad accumulator overflow should not mutate the network");
+
+        OptimizerContext recovery_context{
+            network,
+            batch,
+            objective,
+            overflow_loss,
+            gradient
+        };
+        static_cast<void>(overflow_optimizer->step(recovery_context));
+
+        require_near(
+            network.layers[0].weights[0],
+            before_overflow.layers[0].weights[0] - expected_step(0.2, 1),
+            1e-12,
+            "failed AdaGrad updates should not contaminate accumulator state"
+        );
+    }
+
+    std::cout << "[PASS] AdaGrad state, exact updates, validation, reset, and trainer integration\n";
+}
+
 void run_regularization_coefficient_checks()
 {
     const MLP network = make_zero_network({ 1, 1 });
@@ -4108,8 +4521,6 @@ void run_phase_one_stub_checks()
     require(std::string(sgd->name()) == "SGD",
         "built-in SGD should report its name");
 
-    require(!Optimizers::AdaGrad.make,
-        "AdaGrad exercise spec should expose an empty factory until implemented");
     require(!Optimizers::RMSProp.make,
         "RMSProp exercise spec should expose an empty factory until implemented");
     require(!Optimizers::Adam.make,
@@ -4139,6 +4550,7 @@ void run_all_self_checks()
     run_mse_objective_checks();
     run_sgd_optimizer_checks();
     run_momentum_sgd_optimizer_checks();
+    run_adagrad_optimizer_checks();
     run_regularization_coefficient_checks();
     run_zero_gradient_checks();
     run_backward_checks();

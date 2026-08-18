@@ -65,11 +65,23 @@ struct MomentumSGDOptions {
     double momentum{ 0.5 };
 };
 
+struct AdaGradOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {
+            return 0.01;
+        }
+    };
+
+    double epsilon{ 1e-8 };
+};
+
 OptimizerSpec make_sgd(
     SGDOptions options = {}
 );
 
 OptimizerSpec make_momentum_sgd(MomentumSGDOptions options = {});
+
+OptimizerSpec make_adagrad(AdaGradOptions = {});
 
 namespace Optimizers {
     extern const OptimizerSpec SGD;

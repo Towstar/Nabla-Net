@@ -6,6 +6,7 @@
 #include "optimizers.hpp"
 #include "self_checks.hpp"
 #include "train.hpp"
+#include "examples.hpp"
 
 int main()
 {
@@ -52,13 +53,19 @@ int main()
             make_l2_regularization(0.0001)
         );
 
+        MomentumSGDOptions options{ [](std::size_t) {return 0.2; } , 0.8 };
+
         std::cout << train(
             network,
             training_data,
-            make_sgd(),
+            make_momentum_sgd(options),
             config,
             objective
         );
+
+        run_college_majors_example();
+        run_esports_biometrics_example();
+        run_mushroom_example();
 
     }
     catch (const std::exception& exception) {
