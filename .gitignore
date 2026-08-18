@@ -366,3 +366,5 @@ FodyWeavers.xsd
 NNCPPP-Practice/local-notes/
 /NNCPPP-Practice/.codex-tmp
 /.codex-tmp/ce-check
+/NNCPPP-Practice/notes/PATH.md
+/NNCPPP-Practice/.github/copilot-instructions.md
