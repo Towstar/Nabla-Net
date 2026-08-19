@@ -75,6 +75,41 @@ struct AdaGradOptions {
     double epsilon{ 1e-8 };
 };
 
+struct RMSPropOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {return 0.01; }
+    };
+    double decay = 0.99;
+    double epsilon = 1e-8;
+};
+
+
+struct AdamOptions {
+    // Default options as suggested in the original paper.
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {return 0.001; }
+    };
+    double beta1 = 0.9;
+    double beta2 = 0.999;
+    double epsilon = 1e-8;
+};
+
+struct AdamWOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {return 0.01; }
+    };
+    double decay = 0.99;
+    double epsilon = 1e-8;
+};
+
+struct LBFGSOptions {
+    LearningRateSchedule learning_rate_schedule{
+        [](std::size_t) {return 0.01; }
+    };
+    double decay = 0.99;
+    double epsilon = 1e-8;
+};
+
 OptimizerSpec make_sgd(
     SGDOptions options = {}
 );
@@ -82,6 +117,14 @@ OptimizerSpec make_sgd(
 OptimizerSpec make_momentum_sgd(MomentumSGDOptions options = {});
 
 OptimizerSpec make_adagrad(AdaGradOptions = {});
+
+OptimizerSpec make_rmsprop(RMSPropOptions options = {});
+
+OptimizerSpec make_adam(AdamOptions options = {});
+
+OptimizerSpec make_adamw(AdamWOptions options = {});
+
+OptimizerSpec make_lbfgs(LBFGSOptions options = {});
 
 namespace Optimizers {
     extern const OptimizerSpec SGD;

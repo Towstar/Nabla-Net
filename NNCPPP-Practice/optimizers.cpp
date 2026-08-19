@@ -339,17 +339,242 @@ namespace
     class RMSPropOptimizer final : public Optimizer
     {
     public:
-        const char* name() const noexcept override;
-        void reset(const MLP& network) override;
-        TrainingStepResult step(OptimizerContext& context) override;
+        RMSPropOptimizer(RMSPropOptions options) {
+            if (!options.learning_rate_schedule) {
+                throw std::invalid_argument("Learning Rate Schedule must be defined.");
+            }
+            if (options.epsilon < 0.0 || !std::isfinite(options.epsilon)) {
+                throw std::invalid_argument("Epsilon must be positive and finite");
+            }
+            if (!std::isfinite(options.decay) || options.decay <= 0 || options.decay >= 1) {
+                throw std::invalid_argument("Decay must be in the range (0, 1).");
+            }
+            epsilon = options.epsilon;
+            decay = options.decay;
+            schedule = options.learning_rate_schedule;
+        }
+        const char* name() const noexcept override {
+            return "RMSProp";
+        }
+        void reset(const MLP& network) override {
+            squared_gradient_exponential_moving_average =
+                make_zero_gradients_like(network);
+
+            update_index = 0;
+        }
+        TrainingStepResult step(OptimizerContext& context) override {
+            validate_network(context.network);
+            validate_objective_config(context.objective);
+            validate_gradients_like(context.network, context.current_gradient);
+
+            if (context.batch.empty()) {
+                throw std::invalid_argument(
+                    "RMSProp batch cannot be empty."
+                );
+            }
+            if (!std::isfinite(context.current_loss)) {
+                throw std::invalid_argument(
+                    "Current loss must be finite."
+                );
+            }
+
+            return _step(context);
+        }
+    private:
+        std::size_t update_index{};
+        NetworkGradients squared_gradient_exponential_moving_average;
+        double decay;
+        double epsilon;
+        LearningRateSchedule schedule;
+
+        TrainingStepResult _step(OptimizerContext& context) {
+            const NetworkGradients& gradient = context.current_gradient;
+            MLP candidate = context.network;
+            NetworkGradients next_average = squared_gradient_exponential_moving_average;
+            const double learning_rate = schedule(update_index);
+
+            if (!learning_rate_is_valid(learning_rate)) {
+                throw std::invalid_argument(
+                    "RMSProp schedule produced an invalid learning rate."
+                );
+            }
+
+            for (std::size_t layer_index = 0; layer_index < gradient.layers.size(); layer_index++) {
+                const LayerGradients& grad_layer = gradient.layers[layer_index];
+                LayerGradients& average_layer = next_average.layers[layer_index];
+                DenseLayer& candidate_layer = candidate.layers[layer_index];
+
+                for (std::size_t i = 0; i < grad_layer.weights.size(); i++) {
+                    const double grad = grad_layer.weights[i];
+                    const double current_average = decay * average_layer.weights[i] + (1.0 - decay) * (grad * grad);
+                    
+                    if (!std::isfinite(current_average)) {
+                        throw std::overflow_error(
+                            "RMSProp squared-gradient average overflowed."
+                        );
+                    }
+
+                    const double update = learning_rate * grad / (std::sqrt(current_average) + epsilon);
+
+                    if (!std::isfinite(update)) {
+                        throw std::overflow_error(
+                            "RMSProp update overflowed."
+                        );
+                    }
+
+                    const double new_weight = candidate_layer.weights[i] - update;
+
+                    average_layer.weights[i] = current_average;
+                    candidate_layer.weights[i] = new_weight;
+                }
+                for (std::size_t i = 0; i < grad_layer.biases.size(); i++) {
+                    const double grad = grad_layer.biases[i];
+                    const double current_average = decay * average_layer.biases[i] + (1.0 - decay) * (grad * grad);
+                    const double update = learning_rate * grad / (std::sqrt(current_average) + epsilon);
+                    const double new_bias = candidate_layer.biases[i] - update;
+
+                    if (!std::isfinite(current_average)) {
+                        throw std::overflow_error(
+                            "RMSProp squared-gradient average overflowed."
+                        );
+                    }
+
+                    average_layer.biases[i] = current_average;
+                    candidate_layer.biases[i] = new_bias;
+                }
+            }
+            validate_network(candidate);
+
+            const double new_loss = objective_loss(candidate, context.batch, context.objective);
+            if (!std::isfinite(new_loss)) {
+                throw std::runtime_error("RMSProp produced a non-finite loss.");
+            }
+            context.network = std::move(candidate);
+            squared_gradient_exponential_moving_average = std::move(next_average);
+            update_index++;
+            TrainingStepResult result{};
+            result.updated = true;
+            result.previous_loss = context.current_loss;
+            result.new_loss = new_loss;
+            result.gradient_norm =
+                gradient_l2_norm(context.current_gradient);
+
+            return result;
+        }
     };
 
+    /// <summary>
+    /// Designed with the intentions of combining the strengths of AdaGrad and RMSProp, Adam only requires first order gradients. 
+    /// </summary>
     class AdamOptimizer final : public Optimizer
     {
     public:
-        const char* name() const noexcept override;
-        void reset(const MLP& network) override;
-        TrainingStepResult step(OptimizerContext& context) override;
+        AdamOptimizer(AdamOptions options) {
+            if (!std::isfinite(options.beta1) || options.beta1 >= 1.0 || options.beta1 <= 0.0) {
+                throw std::invalid_argument("beta1 must be finite and in the range (0,1).");
+            }
+            if (!std::isfinite(options.beta2) || options.beta2 >= 1.0 || options.beta2 <= 0.0) {
+                throw std::invalid_argument("beta2 must be finite and in the range (0,1).");
+            }
+            if (!std::isfinite(options.epsilon) || options.epsilon <= 0.0) {
+                throw std::invalid_argument("Epsilon must be positive and finite.");
+            }
+            if (!options.learning_rate_schedule) {
+                throw std::invalid_argument("Learning rate schedule must be defined.");
+            }
+            beta1 = options.beta1;
+            beta2 = options.beta2;
+            epsilon = options.epsilon;
+            schedule = options.learning_rate_schedule;
+        }
+        const char* name() const noexcept override {
+            return "Adam";
+        }
+        void reset(const MLP& network) override {
+            validate_network(network);
+            first_moment = make_zero_gradients_like(network);
+            second_moment = make_zero_gradients_like(network);
+            update_index = 0;
+
+        }
+        TrainingStepResult step(OptimizerContext& context) override {
+            validate_network(context.network);
+            validate_objective_config(context.objective);
+            validate_gradients_like(context.network, first_moment);
+            validate_gradients_like(context.network, second_moment);
+            validate_gradients_like(context.network, context.current_gradient);
+            if (context.batch.empty())
+                throw std::invalid_argument("Batch size must be a positive integer.");
+            if (!std::isfinite(context.current_loss))
+                throw std::invalid_argument("Current loss must be finite.");
+            return _step(context);
+        }
+    private:
+        std::size_t update_index{};
+        NetworkGradients first_moment;
+        NetworkGradients second_moment;
+        double beta1;
+        double beta2;
+        double epsilon;
+        LearningRateSchedule schedule;
+        TrainingStepResult _step(OptimizerContext& context) {
+            size_t t = update_index + 1;
+            double learning_rate = schedule(update_index);
+
+            if (!std::isfinite(learning_rate) || learning_rate <= 0.0)
+                throw std::invalid_argument("Invalid learning rate. Learning rate must be positive and finite.");
+
+            double bias1_correction = 1 - std::pow(beta1, t);
+            double bias2_correction = 1 - std::pow(beta2, t);
+            const auto& grad = context.current_gradient;
+            MLP candidate = context.network;
+            
+            auto next_first_moment = first_moment;
+            auto next_second_moment = second_moment;
+
+            for (std::size_t layer_index = 0; layer_index < grad.layers.size(); layer_index++) {
+                const LayerGradients& grad_layer = grad.layers[layer_index];
+                DenseLayer& candidate_layer = candidate.layers[layer_index];
+
+                for (std::size_t i = 0; i < grad_layer.weights.size(); i++) {
+                    const double weight_grad_i = grad_layer.weights[i];
+                    next_first_moment.layers[layer_index].weights[i] = beta1 * first_moment.layers[layer_index].weights[i] + (1 - beta1) * weight_grad_i;
+                    next_second_moment.layers[layer_index].weights[i] = beta2 * second_moment.layers[layer_index].weights[i] + (1 - beta2) * (weight_grad_i * weight_grad_i);
+                    double bias_corrected_first_moment = next_first_moment.layers[layer_index].weights[i] / bias1_correction;
+                    double bias_corrected_second_moment = next_second_moment.layers[layer_index].weights[i] / bias2_correction;
+                    double update = learning_rate * (bias_corrected_first_moment) / (std::sqrt(bias_corrected_second_moment) + epsilon);
+                    candidate_layer.weights[i] -= update;
+                }
+                for (std::size_t i = 0; i < grad_layer.biases.size(); i++) {
+                    const double bias_grad_i = grad_layer.biases[i];
+                    next_first_moment.layers[layer_index].biases[i] = beta1 * first_moment.layers[layer_index].biases[i] + (1 - beta1) * bias_grad_i;
+                    next_second_moment.layers[layer_index].biases[i] = beta2 * second_moment.layers[layer_index].biases[i] + (1 - beta2) * (bias_grad_i * bias_grad_i);
+                    double bias_corrected_first_moment = next_first_moment.layers[layer_index].biases[i] / bias1_correction;
+                    double bias_corrected_second_moment = next_second_moment.layers[layer_index].biases[i] / bias2_correction;
+                    double update = learning_rate * (bias_corrected_first_moment) / (std::sqrt(bias_corrected_second_moment) + epsilon);
+                    candidate_layer.biases[i] -= update;
+                }
+            }
+            validate_network(candidate);
+            const double new_loss = objective_loss(candidate, context.batch, context.objective);
+            if (!std::isfinite(new_loss)) {
+                throw std::runtime_error("Adam produced a non-finite loss.");
+            }
+            validate_gradients_like(context.network, next_first_moment);
+            validate_gradients_like(context.network, next_second_moment);
+            context.network = std::move(candidate);
+            first_moment = next_first_moment;
+            second_moment = next_second_moment;
+            update_index++;
+            TrainingStepResult result{};
+            result.updated = true;
+            result.previous_loss = context.current_loss;
+            result.new_loss = new_loss;
+            result.gradient_norm =
+                gradient_l2_norm(context.current_gradient);
+
+            return result;
+        }
     };
 
     class AdamWOptimizer final : public Optimizer
@@ -394,10 +619,12 @@ namespace
         );
     }
     
-    std::unique_ptr<Optimizer> make_rmsprop_optimizer();
-    std::unique_ptr<Optimizer> make_adam_optimizer();
-    std::unique_ptr<Optimizer> make_adamw_optimizer();
-    std::unique_ptr<Optimizer> make_lbfgs_optimizer();
+    std::unique_ptr<Optimizer> make_rmsprop_instance(RMSPropOptions options) {
+        return std::make_unique<RMSPropOptimizer>(std::move(options));
+    }
+    std::unique_ptr<Optimizer> make_adam_instance(AdamOptions options) {
+        return std::make_unique<AdamOptimizer>(std::move(options));
+    }
 }
 
 OptimizerSpec make_sgd(SGDOptions options)
@@ -462,6 +689,68 @@ OptimizerSpec make_adagrad(AdaGradOptions options) {
     return make_custom_optimizer("AdaGrad", OptimizerRequirement::MiniBatchCompatible, [schedule, epsilon]() {return make_adagrad_instance(AdaGradOptions{ schedule, epsilon }); });
 }
 
+OptimizerSpec make_rmsprop(RMSPropOptions options) {
+    if (!options.learning_rate_schedule) {
+        throw std::invalid_argument(
+            "RMSProp learning-rate schedule cannot be empty."
+        );
+    }
+    if (!options.epsilon) {
+        throw std::invalid_argument(
+            "RMPSProp epsilon must be defined."
+        );
+    }
+    if (!std::isfinite(options.epsilon) || options.epsilon < 0.0) {
+        throw std::invalid_argument(
+            "epsilon must be finite and positive."
+        );
+    }
+    if (!std::isfinite(options.decay) || options.decay <= 0 || options.decay >= 1) {
+        throw std::invalid_argument("Decay must be in the range (0, 1).");
+    }
+    const LearningRateSchedule schedule = options.learning_rate_schedule;
+    const double epsilon = options.epsilon;
+    const double decay = options.decay;
+    return make_custom_optimizer("RMSProp", OptimizerRequirement::MiniBatchCompatible, [schedule, epsilon, decay]() {return make_rmsprop_instance(RMSPropOptions{ schedule, decay, epsilon }); });
+}
+
+OptimizerSpec make_adam(AdamOptions options) {
+    if (!options.learning_rate_schedule)
+        throw std::invalid_argument("Adam's learning-rate schedule cannot be empty");
+    if (!std::isfinite(options.beta1) || options.beta1 <= 0.0 || options.beta1 >= 1.0)
+        throw std::invalid_argument("Adam's Beta 1 must be in the range (0,1).");
+    if (!std::isfinite(options.beta2) || options.beta2 <= 0.0 || options.beta2 >= 1.0)
+        throw std::invalid_argument("Adam's Beta 2 must be in the range (0,1).");
+    if (!std::isfinite(options.epsilon))
+        throw std::invalid_argument("Adam's epsilon must be finite.");
+    if (options.epsilon <= 0.0)
+        throw std::invalid_argument("Adam's epsilon must be greater than 0.");
+    const LearningRateSchedule schedule = options.learning_rate_schedule;
+    double epsilon = options.epsilon;
+    double beta2 = options.beta2;
+    double beta1 = options.beta1;
+    return make_custom_optimizer("Adam", OptimizerRequirement::MiniBatchCompatible,
+        [schedule, epsilon, beta2, beta1]() {return make_adam_instance(AdamOptions{ schedule, beta1, beta2, epsilon }); }
+    );
+}
+
+OptimizerSpec make_adamw(AdamWOptions options) {
+    static_cast<void>(options);
+    return OptimizerSpec{
+        "AdamW",
+        OptimizerRequirement::MiniBatchCompatible,
+        {}
+    };
+}
+
+OptimizerSpec make_lbfgs(LBFGSOptions options) {
+    static_cast<void>(options);
+    return OptimizerSpec{
+        "LBFGS",
+        OptimizerRequirement::DeterministicFullBatch,
+        {}
+    };
+}
 #pragma endregion
 
 #pragma region Built-in Optimizer Specifications
@@ -473,29 +762,13 @@ namespace Optimizers {
 
     const OptimizerSpec AdaGrad = make_adagrad();
 
-    const OptimizerSpec RMSProp{
-        "RMSProp",
-        OptimizerRequirement::MiniBatchCompatible,
-        {}
-    };
+    const OptimizerSpec RMSProp = make_rmsprop();
 
-    const OptimizerSpec Adam{
-        "Adam",
-        OptimizerRequirement::MiniBatchCompatible,
-        {}
-    };
+    const OptimizerSpec Adam = make_adam();
 
-    const OptimizerSpec AdamW{
-        "AdamW",
-        OptimizerRequirement::MiniBatchCompatible,
-        {}
-    };
+    const OptimizerSpec AdamW = make_adamw();
 
-    const OptimizerSpec LBFGS{
-        "LBFGS",
-        OptimizerRequirement::DeterministicFullBatch,
-        {}
-    };
+    const OptimizerSpec LBFGS = make_lbfgs();
 }
 
 #pragma endregion

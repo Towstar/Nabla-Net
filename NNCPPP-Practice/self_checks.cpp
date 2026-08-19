@@ -1766,6 +1766,629 @@ void run_adagrad_optimizer_checks()
     std::cout << "[PASS] AdaGrad state, exact updates, validation, reset, and trainer integration\n";
 }
 
+void run_rmsprop_optimizer_checks()
+{
+    MLP network = make_zero_network({ 1, 1 });
+    network.layers[0].weights = { 0.5 };
+    network.layers[0].biases = { 0.25 };
+
+    const MLP initial_network = network;
+    const Dataset batch{
+        { { 1.0 }, { 0.0 } }
+    };
+    const ObjectiveConfig objective = make_objective_config(
+        make_mean_squared_error_objective()
+    );
+
+    NetworkGradients gradient = make_zero_gradients_like(network);
+    gradient.layers[0].weights[0] = 0.2;
+    gradient.layers[0].biases[0] = 0.6;
+
+    constexpr double learning_rate = 0.01;
+    constexpr double decay = 0.99;
+    constexpr double epsilon = 1e-8;
+
+    {
+        RMSPropOptions invalid_decay_options;
+        invalid_decay_options.decay = 0.0;
+        require_throws([&invalid_decay_options] {
+            static_cast<void>(make_rmsprop(invalid_decay_options));
+        }, "RMSProp should reject decay equal to zero");
+
+        invalid_decay_options.decay = 1.0;
+        require_throws([&invalid_decay_options] {
+            static_cast<void>(make_rmsprop(invalid_decay_options));
+        }, "RMSProp should reject decay equal to one");
+
+        invalid_decay_options.decay = -0.01;
+        require_throws([&invalid_decay_options] {
+            static_cast<void>(make_rmsprop(invalid_decay_options));
+        }, "RMSProp should reject negative decay");
+
+        invalid_decay_options.decay = 1.01;
+        require_throws([&invalid_decay_options] {
+            static_cast<void>(make_rmsprop(invalid_decay_options));
+        }, "RMSProp should reject decay greater than one");
+
+        RMSPropOptions valid_decay_options;
+        valid_decay_options.decay = 0.5;
+        const OptimizerSpec valid_spec = make_rmsprop(valid_decay_options);
+        require(static_cast<bool>(valid_spec.make),
+            "RMSProp should accept decay strictly inside (0, 1)");
+    }
+
+    validate_optimizer_spec(Optimizers::RMSProp);
+    require(Optimizers::RMSProp.requirement ==
+            OptimizerRequirement::MiniBatchCompatible,
+        "RMSProp should support full-batch, mini-batch, and stochastic training");
+    require(static_cast<bool>(Optimizers::RMSProp.make),
+        "RMSProp should expose a factory after implementation");
+
+    std::unique_ptr<Optimizer> optimizer = Optimizers::RMSProp.make();
+    require(optimizer != nullptr,
+        "RMSProp factory should create an optimizer instance");
+    require(std::string(optimizer->name()) == "RMSProp",
+        "RMSProp should report its public optimizer name");
+
+    optimizer->reset(network);
+
+    const auto expected_step = [learning_rate, decay, epsilon](
+        const double value,
+        const std::size_t update_count
+    ) {
+        const double accumulator =
+            value * value *
+            (1.0 - std::pow(decay, static_cast<double>(update_count)));
+
+        return learning_rate * value /
+            (std::sqrt(accumulator) + epsilon);
+    };
+
+    const double first_loss = objective_loss(network, batch, objective);
+    OptimizerContext first_context{
+        network,
+        batch,
+        objective,
+        first_loss,
+        gradient
+    };
+
+    const TrainingStepResult first_result = optimizer->step(first_context);
+
+    require(first_result.updated,
+        "RMSProp should report a successful first update");
+    require_near(first_result.previous_loss, first_loss, 1e-12,
+        "RMSProp should preserve the supplied previous loss");
+    require_near(first_result.gradient_norm, std::sqrt(0.4), 1e-12,
+        "RMSProp should report the current gradient norm");
+    require_near(
+        network.layers[0].weights[0],
+        initial_network.layers[0].weights[0] - expected_step(0.2, 1),
+        1e-11,
+        "RMSProp first weight update should use the moving squared-gradient average"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        initial_network.layers[0].biases[0] - expected_step(0.6, 1),
+        1e-11,
+        "RMSProp first bias update should use the moving squared-gradient average"
+    );
+    require(std::isfinite(first_result.new_loss),
+        "RMSProp should report a finite post-update loss");
+
+    const MLP after_first_update = network;
+    const double second_loss = objective_loss(network, batch, objective);
+    OptimizerContext second_context{
+        network,
+        batch,
+        objective,
+        second_loss,
+        gradient
+    };
+
+    const TrainingStepResult second_result = optimizer->step(second_context);
+
+    require(second_result.updated,
+        "RMSProp should report a successful second update");
+    require_near(
+        network.layers[0].weights[0],
+        after_first_update.layers[0].weights[0] - expected_step(0.2, 2),
+        1e-11,
+        "RMSProp should persist the moving average across weight updates"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        after_first_update.layers[0].biases[0] - expected_step(0.6, 2),
+        1e-11,
+        "RMSProp should persist the moving average across bias updates"
+    );
+
+    const MLP before_reset_update = network;
+    optimizer->reset(network);
+    const double reset_loss = objective_loss(network, batch, objective);
+    OptimizerContext reset_context{
+        network,
+        batch,
+        objective,
+        reset_loss,
+        gradient
+    };
+    static_cast<void>(optimizer->step(reset_context));
+
+    require_near(
+        network.layers[0].weights[0],
+        before_reset_update.layers[0].weights[0] - expected_step(0.2, 1),
+        1e-11,
+        "RMSProp reset should clear the moving weight average"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        before_reset_update.layers[0].biases[0] - expected_step(0.6, 1),
+        1e-11,
+        "RMSProp reset should clear the moving bias average"
+    );
+
+    const MLP before_invalid_gradient = network;
+    NetworkGradients invalid_gradient = gradient;
+    invalid_gradient.layers[0].weights[0] =
+        std::numeric_limits<double>::quiet_NaN();
+    const double invalid_gradient_loss = objective_loss(
+        network,
+        batch,
+        objective
+    );
+    OptimizerContext invalid_gradient_context{
+        network,
+        batch,
+        objective,
+        invalid_gradient_loss,
+        invalid_gradient
+    };
+
+    require_throws([&optimizer, &invalid_gradient_context] {
+        static_cast<void>(optimizer->step(invalid_gradient_context));
+    }, "RMSProp should reject non-finite gradients");
+    require(same_parameters(network, before_invalid_gradient),
+        "invalid RMSProp gradients should not mutate the network");
+
+    const MLP before_empty_batch = network;
+    const Dataset empty_batch{};
+    OptimizerContext empty_batch_context{
+        network,
+        empty_batch,
+        objective,
+        0.0,
+        gradient
+    };
+
+    require_throws([&optimizer, &empty_batch_context] {
+        static_cast<void>(optimizer->step(empty_batch_context));
+    }, "RMSProp should reject an empty batch");
+    require(same_parameters(network, before_empty_batch),
+        "an empty RMSProp batch should not mutate the network");
+
+    MLP trainer_network = make_zero_network({ 1, 1 });
+    const MLP trainer_initial_network = trainer_network;
+    const Dataset trainer_batch{
+        { { 1.0 }, { 1.0 } }
+    };
+    TrainingConfig training_config;
+    training_config.max_iterations = 2;
+    training_config.max_epochs.reset();
+
+    const TrainingReport report = train(
+        trainer_network,
+        trainer_batch,
+        Optimizers::RMSProp,
+        training_config,
+        objective
+    );
+
+    require(report.completed,
+        "trainer should complete with RMSProp");
+    require(report.stop_reason == TrainingStopReason::MaxIterations,
+        "RMSProp trainer integration should stop at its iteration limit");
+    require(report.steps == 2,
+        "trainer should perform both configured RMSProp updates");
+    require(report.optimizer_name == "RMSProp",
+        "training report should preserve the RMSProp optimizer name");
+    require(std::isfinite(report.final_loss),
+        "RMSProp trainer integration should report a finite final loss");
+    require(any_weight_differs(trainer_network, trainer_initial_network),
+        "RMSProp trainer integration should update the network");
+
+    {
+        std::unique_ptr<Optimizer> overflow_optimizer =
+            Optimizers::RMSProp.make();
+        overflow_optimizer->reset(initial_network);
+
+        NetworkGradients overflow_gradient =
+            make_zero_gradients_like(initial_network);
+        overflow_gradient.layers[0].weights[0] =
+            std::numeric_limits<double>::max();
+
+        MLP overflow_network = initial_network;
+        const double overflow_loss = objective_loss(
+            overflow_network,
+            batch,
+            objective
+        );
+        OptimizerContext overflow_context{
+            overflow_network,
+            batch,
+            objective,
+            overflow_loss,
+            overflow_gradient
+        };
+
+        require_throws([&overflow_optimizer, &overflow_context] {
+            static_cast<void>(overflow_optimizer->step(overflow_context));
+        }, "RMSProp should reject squared-gradient accumulator overflow");
+        require(same_parameters(overflow_network, initial_network),
+            "RMSProp accumulator overflow should not mutate the network");
+
+        NetworkGradients recovery_gradient = gradient;
+        OptimizerContext recovery_context{
+            overflow_network,
+            batch,
+            objective,
+            overflow_loss,
+            recovery_gradient
+        };
+        static_cast<void>(overflow_optimizer->step(recovery_context));
+
+        require_near(
+            overflow_network.layers[0].weights[0],
+            initial_network.layers[0].weights[0] - expected_step(0.2, 1),
+            1e-11,
+            "failed RMSProp updates should not contaminate accumulator state"
+        );
+    }
+
+    std::cout << "[PASS] RMSProp state, exact updates, validation, reset, and trainer integration\n";
+}
+
+void run_adam_optimizer_checks()
+{
+    MLP network = make_zero_network({ 1, 1 });
+    network.layers[0].weights = { 0.5 };
+    network.layers[0].biases = { 0.25 };
+
+    const Dataset batch{
+        { { 1.0 }, { 0.0 } }
+    };
+    const ObjectiveConfig objective = make_objective_config(
+        make_mean_squared_error_objective()
+    );
+
+    constexpr double learning_rate = 0.001;
+    constexpr double beta1 = 0.9;
+    constexpr double beta2 = 0.999;
+    constexpr double epsilon = 1e-8;
+
+    struct ExpectedUpdate {
+        double first_moment;
+        double second_moment;
+        double update;
+    };
+
+    const auto expected_update = [](
+        const double previous_first_moment,
+        const double previous_second_moment,
+        const double gradient,
+        const std::size_t update_number,
+        const double current_learning_rate
+    ) {
+        const double next_first_moment =
+            beta1 * previous_first_moment +
+            (1.0 - beta1) * gradient;
+        const double next_second_moment =
+            beta2 * previous_second_moment +
+            (1.0 - beta2) * gradient * gradient;
+        const double corrected_first_moment =
+            next_first_moment /
+            (1.0 - std::pow(beta1, static_cast<double>(update_number)));
+        const double corrected_second_moment =
+            next_second_moment /
+            (1.0 - std::pow(beta2, static_cast<double>(update_number)));
+
+        return ExpectedUpdate{
+            next_first_moment,
+            next_second_moment,
+            current_learning_rate * corrected_first_moment /
+                (std::sqrt(corrected_second_moment) + epsilon)
+        };
+    };
+
+    {
+        AdamOptions invalid_options;
+        invalid_options.learning_rate_schedule = {};
+        require_throws([&invalid_options] {
+            static_cast<void>(make_adam(invalid_options));
+        }, "Adam should reject an empty learning-rate schedule");
+
+        for (const double invalid_beta : {
+            0.0,
+            1.0,
+            -0.01,
+            1.01,
+            std::numeric_limits<double>::quiet_NaN()
+        }) {
+            invalid_options = AdamOptions{};
+            invalid_options.beta1 = invalid_beta;
+            require_throws([&invalid_options] {
+                static_cast<void>(make_adam(invalid_options));
+            }, "Adam should reject an invalid beta1");
+
+            invalid_options = AdamOptions{};
+            invalid_options.beta2 = invalid_beta;
+            require_throws([&invalid_options] {
+                static_cast<void>(make_adam(invalid_options));
+            }, "Adam should reject an invalid beta2");
+        }
+
+        for (const double invalid_epsilon : {
+            0.0,
+            -1e-8,
+            std::numeric_limits<double>::quiet_NaN()
+        }) {
+            invalid_options = AdamOptions{};
+            invalid_options.epsilon = invalid_epsilon;
+            require_throws([&invalid_options] {
+                static_cast<void>(make_adam(invalid_options));
+            }, "Adam should reject an invalid epsilon");
+        }
+    }
+
+    std::vector<std::size_t> observed_schedule_indices;
+    AdamOptions options;
+    options.learning_rate_schedule =
+        [&observed_schedule_indices](const std::size_t update_index) {
+            observed_schedule_indices.push_back(update_index);
+            return update_index == 1 ? 0.002 : learning_rate;
+        };
+
+    const OptimizerSpec configured_spec = make_adam(options);
+    validate_optimizer_spec(configured_spec);
+    std::unique_ptr<Optimizer> optimizer = configured_spec.make();
+    require(optimizer != nullptr,
+        "Adam factory should create an optimizer instance");
+    require(std::string(optimizer->name()) == "Adam",
+        "Adam should report its public optimizer name");
+
+    optimizer->reset(network);
+
+    NetworkGradients first_gradient = make_zero_gradients_like(network);
+    first_gradient.layers[0].weights[0] = 0.2;
+    first_gradient.layers[0].biases[0] = -0.6;
+
+    const double first_loss = objective_loss(network, batch, objective);
+    OptimizerContext first_context{
+        network,
+        batch,
+        objective,
+        first_loss,
+        first_gradient
+    };
+
+    const TrainingStepResult first_result = optimizer->step(first_context);
+    const ExpectedUpdate first_weight_update =
+        expected_update(0.0, 0.0, 0.2, 1, learning_rate);
+    const ExpectedUpdate first_bias_update =
+        expected_update(0.0, 0.0, -0.6, 1, learning_rate);
+
+    require(first_result.updated,
+        "Adam should report a successful first update");
+    require_near(first_result.previous_loss, first_loss, 1e-12,
+        "Adam should preserve the supplied previous loss");
+    require_near(first_result.gradient_norm, std::sqrt(0.4), 1e-12,
+        "Adam should report the current gradient norm");
+    require_near(
+        network.layers[0].weights[0],
+        0.5 - first_weight_update.update,
+        1e-11,
+        "Adam first weight update should include bias correction"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        0.25 - first_bias_update.update,
+        1e-11,
+        "Adam first bias update should include bias correction"
+    );
+    require(std::isfinite(first_result.new_loss),
+        "Adam should report a finite post-update loss");
+
+    const MLP after_first_update = network;
+    NetworkGradients second_gradient = make_zero_gradients_like(network);
+    second_gradient.layers[0].weights[0] = -0.4;
+    second_gradient.layers[0].biases[0] = 0.3;
+
+    const double second_loss = objective_loss(network, batch, objective);
+    OptimizerContext second_context{
+        network,
+        batch,
+        objective,
+        second_loss,
+        second_gradient
+    };
+
+    const TrainingStepResult second_result = optimizer->step(second_context);
+    const ExpectedUpdate second_weight_update =
+        expected_update(
+            first_weight_update.first_moment,
+            first_weight_update.second_moment,
+            -0.4,
+            2,
+            0.002
+        );
+    const ExpectedUpdate second_bias_update =
+        expected_update(
+            first_bias_update.first_moment,
+            first_bias_update.second_moment,
+            0.3,
+            2,
+            0.002
+        );
+
+    require(second_result.updated,
+        "Adam should report a successful second update");
+    require_near(
+        network.layers[0].weights[0],
+        after_first_update.layers[0].weights[0] - second_weight_update.update,
+        1e-11,
+        "Adam should persist the first moment and second moment across updates"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        after_first_update.layers[0].biases[0] - second_bias_update.update,
+        1e-11,
+        "Adam should persist moment state for biases"
+    );
+
+    optimizer->reset(network);
+    const MLP before_reset_update = network;
+    const double reset_loss = objective_loss(network, batch, objective);
+    OptimizerContext reset_context{
+        network,
+        batch,
+        objective,
+        reset_loss,
+        first_gradient
+    };
+    static_cast<void>(optimizer->step(reset_context));
+
+    require_near(
+        network.layers[0].weights[0],
+        before_reset_update.layers[0].weights[0] - first_weight_update.update,
+        1e-11,
+        "Adam reset should clear the first and second moment state for weights"
+    );
+    require_near(
+        network.layers[0].biases[0],
+        before_reset_update.layers[0].biases[0] - first_bias_update.update,
+        1e-11,
+        "Adam reset should clear the first and second moment state for biases"
+    );
+    require(
+        observed_schedule_indices == std::vector<std::size_t>{ 0, 1, 0 },
+        "Adam should restart the learning-rate schedule after reset"
+    );
+
+    {
+        const MLP before_invalid_gradient = network;
+        NetworkGradients invalid_gradient = first_gradient;
+        invalid_gradient.layers[0].weights[0] =
+            std::numeric_limits<double>::quiet_NaN();
+        const double invalid_gradient_loss =
+            objective_loss(network, batch, objective);
+        OptimizerContext invalid_gradient_context{
+            network,
+            batch,
+            objective,
+            invalid_gradient_loss,
+            invalid_gradient
+        };
+
+        require_throws([&optimizer, &invalid_gradient_context] {
+            static_cast<void>(optimizer->step(invalid_gradient_context));
+        }, "Adam should reject non-finite gradients");
+        require(same_parameters(network, before_invalid_gradient),
+            "invalid Adam gradients should not mutate the network");
+    }
+
+    {
+        AdamOptions invalid_schedule_options = options;
+        invalid_schedule_options.learning_rate_schedule =
+            [](std::size_t) {
+                return std::numeric_limits<double>::quiet_NaN();
+            };
+        const OptimizerSpec invalid_schedule_spec =
+            make_adam(invalid_schedule_options);
+        std::unique_ptr<Optimizer> invalid_schedule_optimizer =
+            invalid_schedule_spec.make();
+        invalid_schedule_optimizer->reset(network);
+
+        const MLP before_invalid_schedule = network;
+        const double invalid_schedule_loss =
+            objective_loss(network, batch, objective);
+        OptimizerContext invalid_schedule_context{
+            network,
+            batch,
+            objective,
+            invalid_schedule_loss,
+            first_gradient
+        };
+
+        require_throws([&invalid_schedule_optimizer, &invalid_schedule_context] {
+            static_cast<void>(invalid_schedule_optimizer->step(invalid_schedule_context));
+        }, "Adam should reject a non-finite scheduled learning rate");
+        require(same_parameters(network, before_invalid_schedule),
+            "an invalid Adam learning rate should not mutate the network");
+    }
+
+    {
+        MLP overflow_network = make_zero_network({ 2, 1 });
+        overflow_network.layers[0].weights = { 0.5, -0.25 };
+        overflow_network.layers[0].biases = { 0.1 };
+        const Dataset overflow_batch{
+            { { 1.0, 1.0 }, { 0.0 } }
+        };
+        NetworkGradients overflow_gradient =
+            make_zero_gradients_like(overflow_network);
+        overflow_gradient.layers[0].weights[0] = 0.2;
+        overflow_gradient.layers[0].weights[1] =
+            std::numeric_limits<double>::max();
+        overflow_gradient.layers[0].biases[0] = 0.3;
+
+        std::unique_ptr<Optimizer> overflow_optimizer = configured_spec.make();
+        overflow_optimizer->reset(overflow_network);
+        const MLP before_overflow = overflow_network;
+        const double overflow_loss =
+            objective_loss(overflow_network, overflow_batch, objective);
+        OptimizerContext overflow_context{
+            overflow_network,
+            overflow_batch,
+            objective,
+            overflow_loss,
+            overflow_gradient
+        };
+
+        require_throws([&overflow_optimizer, &overflow_context] {
+            static_cast<void>(overflow_optimizer->step(overflow_context));
+        }, "Adam should reject moment overflow");
+        require(same_parameters(overflow_network, before_overflow),
+            "Adam moment overflow should not mutate the network");
+    }
+
+    MLP trainer_network = make_zero_network({ 1, 1 });
+    const MLP trainer_initial_network = trainer_network;
+    const Dataset trainer_batch{
+        { { 1.0 }, { 1.0 } }
+    };
+    TrainingConfig training_config;
+    training_config.max_iterations = 2;
+    training_config.max_epochs.reset();
+
+    const TrainingReport report = train(
+        trainer_network,
+        trainer_batch,
+        Optimizers::Adam,
+        training_config,
+        objective
+    );
+
+    require(report.completed,
+        "trainer should complete with Adam");
+    require(report.steps == 2,
+        "Adam trainer integration should perform both configured updates");
+    require(report.optimizer_name == "Adam",
+        "training report should preserve the Adam optimizer name");
+    require(any_weight_differs(trainer_network, trainer_initial_network),
+        "Adam trainer integration should update the network");
+
+    std::cout << "[PASS] Adam moments, bias correction, validation, reset, and trainer integration\n";
+}
+
 void run_regularization_coefficient_checks()
 {
     const MLP network = make_zero_network({ 1, 1 });
@@ -4521,10 +5144,16 @@ void run_phase_one_stub_checks()
     require(std::string(sgd->name()) == "SGD",
         "built-in SGD should report its name");
 
-    require(!Optimizers::RMSProp.make,
-        "RMSProp exercise spec should expose an empty factory until implemented");
-    require(!Optimizers::Adam.make,
-        "Adam exercise spec should expose an empty factory until implemented");
+    validate_optimizer_spec(Optimizers::Adam);
+    require(static_cast<bool>(Optimizers::Adam.make),
+        "implemented Adam should expose a factory");
+
+    std::unique_ptr<Optimizer> adam = Optimizers::Adam.make();
+    require(adam != nullptr,
+        "built-in Adam factory should create an optimizer");
+    require(std::string(adam->name()) == "Adam",
+        "built-in Adam should report its name");
+
     require(!Optimizers::AdamW.make,
         "AdamW exercise spec should expose an empty factory until implemented");
     require(!Optimizers::LBFGS.make,
@@ -4551,6 +5180,8 @@ void run_all_self_checks()
     run_sgd_optimizer_checks();
     run_momentum_sgd_optimizer_checks();
     run_adagrad_optimizer_checks();
+    run_rmsprop_optimizer_checks();
+    run_adam_optimizer_checks();
     run_regularization_coefficient_checks();
     run_zero_gradient_checks();
     run_backward_checks();
