@@ -511,8 +511,13 @@ namespace
         }
     private:
         std::size_t update_index{};
+
+        // Roughly E[g_t]
         NetworkGradients first_moment;
+        
+        // Roughly E[(g_t)^2]
         NetworkGradients second_moment;
+        
         double beta1;
         double beta2;
         double epsilon;
@@ -524,8 +529,10 @@ namespace
             if (!std::isfinite(learning_rate) || learning_rate <= 0.0)
                 throw std::invalid_argument("Invalid learning rate. Learning rate must be positive and finite.");
 
+            // remove the pull towards zero on start
             double bias1_correction = 1 - std::pow(beta1, t);
             double bias2_correction = 1 - std::pow(beta2, t);
+            
             const auto& grad = context.current_gradient;
             MLP candidate = context.network;
             
@@ -580,9 +587,129 @@ namespace
     class AdamWOptimizer final : public Optimizer
     {
     public:
-        const char* name() const noexcept override;
-        void reset(const MLP& network) override;
-        TrainingStepResult step(OptimizerContext& context) override;
+        explicit AdamWOptimizer(AdamWOptions options) : 
+            beta1(options.beta1), 
+            beta2(options.beta2), 
+            epsilon(options.epsilon), 
+            weight_decay(options.weight_decay), 
+            schedule(std::move(options.learning_rate_schedule)) {
+            if (!schedule)
+                throw std::invalid_argument("AdamW learning-rate schedule cannot be empty.");
+            if (!std::isfinite(beta1) ||
+                beta1 <= 0.0 ||
+                beta1 >= 1.0) {
+                throw std::invalid_argument("AdamW beta1 must be in (0,1).");
+            }
+            if (!std::isfinite(beta2) || beta2 <= 0.0 || beta2 >= 1.0) {
+                throw std::invalid_argument("AdamW beta2 must be in (0,1).");
+            }
+            if (!std::isfinite(epsilon) || epsilon <= 0.0) {
+                throw std::invalid_argument(
+                    "AdamW epsilon must be positive and finite."
+                );
+            }
+            if (!std::isfinite(weight_decay) || weight_decay <= 0.0) {
+                throw std::invalid_argument("AdamW weight decay must be positive and finite.");
+            }
+        }
+        const char* name() const noexcept override {
+            return "AdamW";
+        }
+        void reset(const MLP& network) override {
+            validate_network(network);
+            first_moment = make_zero_gradients_like(network);
+            second_moment = make_zero_gradients_like(network);
+            update_index = 0;
+        }
+        TrainingStepResult step(OptimizerContext& context) override {
+            validate_network(context.network);
+            validate_objective_config(context.objective);
+            validate_gradients_like(context.network, first_moment);
+            validate_gradients_like(context.network, second_moment);
+            validate_gradients_like(context.network, context.current_gradient);
+            if (context.batch.empty())
+                throw std::invalid_argument("Batch size must be a positive integer.");
+            if (!std::isfinite(context.current_loss))
+                throw std::invalid_argument("Current loss must be finite.");
+            return _step(context);
+        }
+    private:
+        std::size_t update_index{};
+
+        // Roughly E[g_t]
+        NetworkGradients first_moment;
+
+        // Roughly E[(g_t)^2]
+        NetworkGradients second_moment;
+
+        double beta1;
+        double beta2;
+        double epsilon;
+        double weight_decay;
+        LearningRateSchedule schedule;
+
+        TrainingStepResult _step(OptimizerContext& context) {
+            size_t t = update_index + 1;
+            double learning_rate = schedule(update_index);
+
+            if (!std::isfinite(learning_rate) || learning_rate <= 0.0)
+                throw std::invalid_argument("Invalid learning rate. Learning rate must be positive and finite.");
+
+            // remove the pull towards zero on start
+            double bias1_correction = 1 - std::pow(beta1, t);
+            double bias2_correction = 1 - std::pow(beta2, t);
+
+            const auto& grad = context.current_gradient;
+            MLP candidate = context.network;
+
+            auto next_first_moment = first_moment;
+            auto next_second_moment = second_moment;
+
+            for (std::size_t layer_index = 0; layer_index < grad.layers.size(); layer_index++) {
+                const LayerGradients& grad_layer = grad.layers[layer_index];
+                DenseLayer& candidate_layer = candidate.layers[layer_index];
+
+                for (std::size_t i = 0; i < grad_layer.weights.size(); i++) {
+                    const double weight_grad_i = grad_layer.weights[i];
+                    next_first_moment.layers[layer_index].weights[i] = beta1 * first_moment.layers[layer_index].weights[i] + (1 - beta1) * weight_grad_i;
+                    next_second_moment.layers[layer_index].weights[i] = beta2 * second_moment.layers[layer_index].weights[i] + (1 - beta2) * (weight_grad_i * weight_grad_i);
+                    double bias_corrected_first_moment = next_first_moment.layers[layer_index].weights[i] / bias1_correction;
+                    double bias_corrected_second_moment = next_second_moment.layers[layer_index].weights[i] / bias2_correction;
+                    const double adam_update = learning_rate * bias_corrected_first_moment / (std::sqrt(bias_corrected_second_moment) + epsilon);
+                    candidate_layer.weights[i] *= (1.0 - learning_rate * weight_decay);
+                    candidate_layer.weights[i] -= adam_update;
+                }
+                for (std::size_t i = 0; i < grad_layer.biases.size(); i++) {
+                    const double bias_grad_i = grad_layer.biases[i];
+                    next_first_moment.layers[layer_index].biases[i] = beta1 * first_moment.layers[layer_index].biases[i] + (1 - beta1) * bias_grad_i;
+                    next_second_moment.layers[layer_index].biases[i] = beta2 * second_moment.layers[layer_index].biases[i] + (1 - beta2) * (bias_grad_i * bias_grad_i);
+                    double bias_corrected_first_moment = next_first_moment.layers[layer_index].biases[i] / bias1_correction;
+                    double bias_corrected_second_moment = next_second_moment.layers[layer_index].biases[i] / bias2_correction;
+                    const double adam_update = learning_rate * bias_corrected_first_moment / (std::sqrt(bias_corrected_second_moment) + epsilon);
+                    candidate_layer.biases[i] *= (1.0 - learning_rate * weight_decay);
+                    candidate_layer.biases[i] -= adam_update;
+                }
+            }
+            validate_network(candidate);
+            const double new_loss = objective_loss(candidate, context.batch, context.objective);
+            if (!std::isfinite(new_loss)) {
+                throw std::runtime_error("AdamW produced a non-finite loss.");
+            }
+            validate_gradients_like(context.network, next_first_moment);
+            validate_gradients_like(context.network, next_second_moment);
+            context.network = std::move(candidate);
+            first_moment = next_first_moment;
+            second_moment = next_second_moment;
+            update_index++;
+            TrainingStepResult result{};
+            result.updated = true;
+            result.previous_loss = context.current_loss;
+            result.new_loss = new_loss;
+            result.gradient_norm =
+                gradient_l2_norm(context.current_gradient);
+
+            return result;
+        }
     };
 
     class LBFGSOptimizer final : public Optimizer
@@ -624,6 +751,9 @@ namespace
     }
     std::unique_ptr<Optimizer> make_adam_instance(AdamOptions options) {
         return std::make_unique<AdamOptimizer>(std::move(options));
+    }
+    std::unique_ptr<Optimizer> make_adamw_instance(AdamWOptions options) {
+        return std::make_unique<AdamWOptimizer>(std::move(options));
     }
 }
 
@@ -735,12 +865,25 @@ OptimizerSpec make_adam(AdamOptions options) {
 }
 
 OptimizerSpec make_adamw(AdamWOptions options) {
-    static_cast<void>(options);
-    return OptimizerSpec{
-        "AdamW",
-        OptimizerRequirement::MiniBatchCompatible,
-        {}
-    };
+    if (!options.learning_rate_schedule)
+        throw std::invalid_argument("AdamW's learning-rate schedule cannot be empty");
+    if (!std::isfinite(options.beta1) || options.beta1 <= 0.0 || options.beta1 >= 1.0)
+        throw std::invalid_argument("AdamW's Beta 1 must be in the range (0,1).");
+    if (!std::isfinite(options.beta2) || options.beta2 <= 0.0 || options.beta2 >= 1.0)
+        throw std::invalid_argument("AdamW's Beta 2 must be in the range (0,1).");
+    if (!std::isfinite(options.epsilon))
+        throw std::invalid_argument("AdamW's epsilon must be finite.");
+    if (options.epsilon <= 0.0)
+        throw std::invalid_argument("AdamW's epsilon must be greater than 0.");
+    if (options.weight_decay <= 0.0 || options.weight_decay >= 1)
+        throw std::invalid_argument("AdamW's weight decay must be in the range (0,1), with values in [0.01, 0.1] being commonly used.");
+    const LearningRateSchedule schedule = options.learning_rate_schedule;
+    double epsilon = options.epsilon;
+    double beta2 = options.beta2;
+    double beta1 = options.beta1;
+    double weight_decay = options.weight_decay;
+    return make_custom_optimizer("AdamW", OptimizerRequirement::MiniBatchCompatible,
+        [schedule, epsilon, beta2, beta1, weight_decay]() {return make_adamw_instance(AdamWOptions{ schedule, beta1, beta2, epsilon, weight_decay }); });
 }
 
 OptimizerSpec make_lbfgs(LBFGSOptions options) {

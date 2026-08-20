@@ -96,10 +96,16 @@ struct AdamOptions {
 
 struct AdamWOptions {
     LearningRateSchedule learning_rate_schedule{
-        [](std::size_t) {return 0.01; }
+        [](std::size_t) {
+            return 0.001;
+        }
     };
-    double decay = 0.99;
-    double epsilon = 1e-8;
+
+    double beta1{ 0.9 };
+    double beta2{ 0.999 };
+    double epsilon{ 1e-8 };
+
+    double weight_decay{ 0.01 };
 };
 
 struct LBFGSOptions {

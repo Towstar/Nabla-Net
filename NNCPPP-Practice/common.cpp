@@ -212,3 +212,8 @@ double normalpdf(double z) {
 double stable_softplus(double z) {
 	return std::log(1 + std::exp(-1 * std::abs(z))) + std::max(z, 0.0);
 }
+
+// SVD (Jacobi & BDC)
+
+// FFT (for spectral layers & image processing)
+
