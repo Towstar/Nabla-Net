@@ -71,10 +71,40 @@ RegularizationTerm make_l2_regularization(
 enum class L1Method {
     Subgradient,
     Proximal,
-    Eps_SmoothL1Regularizer,
-    Log_SmoothL1Regularizer
+    EpsilonSmooth,
+    LogCoshSmooth,
+    // Compatibility aliases for the original public spellings.
+    Eps_SmoothL1Regularizer = EpsilonSmooth,
+    Log_SmoothL1Regularizer = LogCoshSmooth
 };
 
+/// Options shared by L1 and elastic-net regularization.
+/// epsilon is used only by EpsilonSmooth; temperature is used only by
+/// LogCoshSmooth. Both smooth penalties approach |x| as their parameter
+/// approaches zero from above.
+struct L1RegularizationOptions {
+    bool include_biases{ false };
+    L1Method method{ L1Method::Subgradient };
+    double epsilon{ 1e-6 };
+    double temperature{ 1e-2 };
+};
+
+/// Elastic net combines the selected L1 implementation with an L2 penalty.
+/// Select L1Method::Proximal to use a smooth L2 gradient plus a post-step L1
+/// soft-thresholding operation.
+struct ElasticNetOptions {
+    double l1_coefficient{};
+    double l2_coefficient{};
+    L1RegularizationOptions l1{};
+};
+
+// Options-based overload for callers who need smoothing or proximal choices.
+RegularizationTerm make_l1_regularization(
+    double coefficient,
+    L1RegularizationOptions options
+);
+
+// Convenience overload retained for the original common call form.
 RegularizationTerm make_l1_regularization(
     double coefficient,
     bool include_biases = false,
@@ -88,12 +118,14 @@ RegularizationTerm make_l1_regularization_subgradient(
 
 RegularizationTerm eps_make_l1_regularization_smooth(
     double coefficient,
-    bool include_biases = false
+    bool include_biases = false,
+    double epsilon = 1e-6
 );
 
 RegularizationTerm log_make_l1_regularization_smooth(
     double coefficient,
-    bool include_biases = false
+    bool include_biases = false,
+    double temperature = 1e-2
 );
 
 RegularizationTerm make_l1_regularization_Proximal(
@@ -101,6 +133,12 @@ RegularizationTerm make_l1_regularization_Proximal(
     bool include_biases = false
 );
 
+RegularizationTerm make_elastic_net_regularization(
+    ElasticNetOptions options
+);
+
+// Convenience overload for the original elastic-net call form. It selects
+// the L1 subgradient implementation.
 RegularizationTerm make_elastic_net_regularization(
     double l1_coefficient,
     double l2_coefficient,

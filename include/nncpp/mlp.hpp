@@ -198,10 +198,13 @@ struct RegularizationTerm {
     // Callbacks return the unscaled penalty and unscaled gradient. The
     // objective aggregation layer applies coefficient exactly once.
     std::function<double(const MLP&)> value;
+    // Optional for a purely proximal term. A composite term, such as
+    // proximal elastic net, may use this callback for its smooth component
+    // and proximal_update for its non-smooth component.
     std::function<void(const MLP&, NetworkGradients&)> add_gradient;
-    // Proximal terms contribute their value to the objective but do not add a
-    // subgradient. The trainer invokes this callback after a base optimizer
-    // step, passing the effective step size.
+    // The trainer invokes this callback after a base optimizer step, passing
+    // the effective step size. It may coexist with add_gradient when the term
+    // combines a smooth and a non-smooth penalty.
     bool proximal{ false };
     std::function<void(MLP&, double effective_step_size)> proximal_update;
     bool smooth{ true };

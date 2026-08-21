@@ -5096,9 +5096,11 @@ void run_phase_one_stub_checks()
     const ObjectiveConfig default_objective = make_objective_config();
     validate_objective_config(default_objective);
 
-    require_throws([] {
-        static_cast<void>(make_elastic_net_regularization(0.1, 0.1));
-    }, "Elastic Net should remain an explicit exercise stub");
+    const RegularizationTerm elastic_net =
+        make_elastic_net_regularization(0.1, 0.1);
+    require_near(
+        elastic_net.coefficient, 1.0, 1e-12,
+        "elastic net should own its L1 and L2 strengths");
 
     require_throws([] {
         validate_objective_config({});

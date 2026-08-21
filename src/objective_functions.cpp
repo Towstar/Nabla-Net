@@ -572,13 +572,7 @@ void validate_objective_config(const ObjectiveConfig& config)
                     "Proximal regularization term must provide proximal callback."
                 );
             }
-            if (term.add_gradient) {
-                throw std::invalid_argument(
-                    "Proximal regularization terms must not also provide a gradient callback."
-                );
-            }
-        }
-        else if (!term.add_gradient) {
+        } else if (!term.add_gradient) {
             throw std::invalid_argument(
                 "Regularization term must provide gradient callback."
             );
@@ -597,7 +591,10 @@ void add_regularization_gradients(
     validate_gradients_like(network, gradients);
 
     for (const RegularizationTerm& term : config.regularizers) {
-        if (term.proximal) {
+        // A term can be both proximal and differentiable. Proximal elastic
+        // net, for example, contributes its L2 gradient here and performs
+        // L1 soft-thresholding after the optimizer step.
+        if (!term.add_gradient) {
             continue;
         }
         // Regularizer callbacks produce unscaled contributions. Apply the
@@ -787,149 +784,226 @@ RegularizationTerm make_l2_regularization(
 
 #pragma region L1 Regularization
 
+namespace {
+constexpr double l1_subgradient(const double value) noexcept
+{
+    if (value > 0.0) {
+        return 1.0;
+    }
+    if (value < 0.0) {
+        return -1.0;
+    }
+    return 0.0;
+}
+
+} // namespace
+
 RegularizationTerm make_l1_regularization(
-    const double scalar,
+    const double coefficient,
+    const L1RegularizationOptions options
+)
+{
+    if (!std::isfinite(coefficient))
+        throw std::invalid_argument("The L1 regularization constant must be finite.");
+    if (coefficient < 0)
+        throw std::invalid_argument("The L1 regularization constant must be nonnegative.");
+    switch (options.method) {
+        case L1Method::Subgradient:
+            return make_l1_regularization_subgradient(
+                coefficient,
+                options.include_biases
+            );
+        case L1Method::Proximal:
+            return make_l1_regularization_Proximal(
+                coefficient,
+                options.include_biases
+            );
+        case L1Method::EpsilonSmooth:
+            return eps_make_l1_regularization_smooth(
+                coefficient,
+                options.include_biases,
+                options.epsilon
+            );
+        case L1Method::LogCoshSmooth:
+            return log_make_l1_regularization_smooth(
+                coefficient,
+                options.include_biases,
+                options.temperature
+            );
+        default:
+            throw std::invalid_argument("Invalid L1 regularization method.");
+    }
+}
+
+RegularizationTerm make_l1_regularization(
+    const double coefficient,
     const bool include_biases,
     const L1Method method
 )
 {
-    switch (method) {
-        case L1Method::Subgradient:
-            return make_l1_regularization_subgradient(scalar, include_biases);
-        case L1Method::Proximal:
-            return make_l1_regularization_Proximal(scalar, include_biases);
-        case L1Method::Eps_SmoothL1Regularizer:
-        case L1Method::Log_SmoothL1Regularizer:
-            throw std::logic_error(
-                "Phase 1 exercise stub: implement smooth L1 regularization."
-            );
-        default:
-            throw std::invalid_argument(
-                "Invalid L1 regularization method."
-            );
-    }
-}
-
-constexpr double l1_subgradient(const double value) noexcept {
-    if (value > 0.0) {
-        return 1.0;
-    }
-    else if (value < 0.0) {
-        return -1.0;
-    }
-    else {
-        return 0.0; // Subgradient at zero can be any value in [-1, 1], but we choose 0 for simplicity
-    }
+    L1RegularizationOptions options;
+    options.include_biases = include_biases;
+    options.method = method;
+    return make_l1_regularization(coefficient, options);
 }
 
 //Smooth L1 Regularizer using epsilon smoothing ((theta^2 + eps^2)^(1/2) in place of absolute value)
 RegularizationTerm eps_make_l1_regularization_smooth(
     const double scalar,
-    const bool include_biases
+    const bool include_biases,
+    const double epsilon
 )
 {
     if (!std::isfinite(scalar) || scalar < 0.0) {
         throw std::invalid_argument(
-            "L1 regularization scalar must be finite and non-negative."
+            "Epsilon-smoothed L1 coefficient must be finite and non-negative."
+        );
+    }
+    if (!std::isfinite(epsilon) || epsilon <= 0.0) {
+        throw std::invalid_argument(
+            "Epsilon-smoothed L1 requires a positive finite epsilon."
         );
     }
 
-
-
     RegularizationTerm term;
-    term.name = "L1 Regularization";
-    term.value = [scalar, include_biases](const MLP& network) -> double {
+    term.name = "L1 Regularization Eps";
+    term.value = [include_biases, epsilon](const MLP& network) -> double {
+		validate_network(network);
+
         double l1_sum = 0.0;
         for (const auto& layer : network.layers) {
             for (const auto& weight : layer.weights) {
-                l1_sum += std::abs(weight);
+                l1_sum += (std::sqrt((weight * weight) + (epsilon * epsilon)) - epsilon);
+            }
+            if (!std::isfinite(l1_sum)) {
+                throw std::overflow_error(
+                    "L1 regularization value overflowed."
+                );
             }
             if (include_biases) {
                 for (double bias : layer.biases) {
-                    l1_sum += std::abs(bias);
+                    l1_sum += (std::sqrt((bias * bias) + (epsilon * epsilon)) - epsilon);
+                }
+                if (!std::isfinite(l1_sum)) {
+                    throw std::overflow_error(
+                        "L1 regularization value overflowed."
+                    );
                 }
             }
-            if (l1_sum < 0.0 || !std::isfinite(l1_sum)) {
-                throw std::overflow_error(
-                    "L1 regularization sum overflowed."
-                );
-            }
         }
-        return scalar * l1_sum;
+        return l1_sum;
     };
-    term.add_gradient = [scalar, include_biases](const MLP& network, NetworkGradients& gradients) {
+    term.add_gradient = [include_biases, epsilon](const MLP& network, NetworkGradients& gradients) {
+		validate_network(network);
+		validate_gradients_like(network, gradients);
+
         for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
             const auto& layer = network.layers[layer_idx];
             auto& grad_layer = gradients.layers[layer_idx];
             for (std::size_t i = 0; i < layer.weights.size(); i++) {
-                grad_layer.weights[i] += scalar * l1_subgradient(layer.weights[i]);
+                const double weight = layer.weights[i];
+                grad_layer.weights[i] += (weight / std::sqrt((weight * weight) + (epsilon * epsilon)));
             }
             if (include_biases) {
-                for (std::size_t j = 0; j < layer.biases.size(); ++j) {
-                    grad_layer.biases[j] += scalar * l1_subgradient(layer.biases[j]);
+                for (std::size_t i = 0; i < layer.biases.size(); ++i) {
+                    const double bias = layer.biases[i];
+                    grad_layer.biases[i] += (bias / std::sqrt((bias * bias) + (epsilon * epsilon)));
                 }
             }
         }
+        validate_gradients_like(network, gradients);
     };
-    term.smooth = false;
+    term.smooth = true;
     term.includes_biases = include_biases;
     term.coefficient = scalar;
     return term;
 }
 
-//Smooth L1 Regularizer using log smoothing T(log(1 + exp(theta/T)) + T(log(-theta/T)) in place of absolute value)
-//where T is a temperature parameter that controls the smoothness of the approximation. As T approaches 0,
-//the approximation approaches the true L1 norm. As T increases, the approximation becomes smoother and less sensitive to small changes in theta.
-// (needs to be sufficiently small)
+double stable_temperature_log_cosh(const double parameter, const double temperature){
+    constexpr double LN_2 = 0.69314718055994530942;
+
+    const double abs_parameter = std::abs(parameter);
+    const double scaled_abs_parameter = abs_parameter / temperature;
+
+    // ln(2sinh((|theta| / 2T)^2))
+    if (scaled_abs_parameter < 20.0) {
+        const double sinh_half =
+            std::sinh(0.5 * scaled_abs_parameter);
+
+        return temperature
+            * std::log1p(2.0 * sinh_half * sinh_half);
+    }
+
+    // |theta| + T[ln(e^-2(|theta|/ temperature)) - ln2]
+    return abs_parameter
+        + temperature * (std::log1p(std::exp(-2.0 * scaled_abs_parameter)) - LN_2);
+}
+
+// Log-cosh smoothing replaces |theta|
 RegularizationTerm log_make_l1_regularization_smooth(
     const double scalar,
-    const bool include_biases
+    const bool include_biases,
+    const double temperature
 )
 {
     if (!std::isfinite(scalar) || scalar < 0.0) {
         throw std::invalid_argument(
-            "L1 regularization scalar must be finite and non-negative."
+            "Log-cosh-smoothed L1 coefficient must be finite and non-negative."
+        );
+    }
+    if (!std::isfinite(temperature) || temperature <= 0.0) {
+        throw std::invalid_argument(
+            "Log-smooth L1 regularization temperature must be "
+            "finite and positive."
         );
     }
 
-
-
     RegularizationTerm term;
-    term.name = "L1 Regularization";
-    term.value = [scalar, include_biases](const MLP& network) -> double {
+    term.name = "Log Smooth L1 Regularization";
+    term.value = [include_biases, temperature](const MLP& network) -> double {
+		validate_network(network);
         double l1_sum = 0.0;
         for (const auto& layer : network.layers) {
             for (const auto& weight : layer.weights) {
-                l1_sum += std::abs(weight);
+                l1_sum += stable_temperature_log_cosh(weight, temperature);
+            }
+            if (!std::isfinite(l1_sum)) {
+                throw std::overflow_error(
+                    "L1 regularization value overflowed."
+                );
             }
             if (include_biases) {
                 for (double bias : layer.biases) {
-                    l1_sum += std::abs(bias);
+                    l1_sum += stable_temperature_log_cosh(bias, temperature);
+                }
+                if (!std::isfinite(l1_sum)) {
+                    throw std::overflow_error(
+                        "L1 regularization value overflowed."
+                    );
                 }
             }
-            if (l1_sum < 0.0 || !std::isfinite(l1_sum)) {
-                throw std::overflow_error(
-                    "L1 regularization sum overflowed."
-                );
-            }
         }
-        return scalar * l1_sum;
-        };
-    term.add_gradient = [scalar, include_biases](const MLP& network, NetworkGradients& gradients) {
+        return l1_sum;
+    };
+    term.add_gradient = [include_biases, temperature](const MLP& network, NetworkGradients& gradients) {
+		validate_network(network);
+		validate_gradients_like(network, gradients);
+
         for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); ++layer_idx) {
             const auto& layer = network.layers[layer_idx];
             auto& grad_layer = gradients.layers[layer_idx];
             for (std::size_t i = 0; i < layer.weights.size(); i++) {
-                grad_layer.weights[i] += scalar * l1_subgradient(layer.weights[i]);
+                grad_layer.weights[i] += std::tanh(layer.weights[i] / temperature);
             }
             if (include_biases) {
                 for (std::size_t j = 0; j < layer.biases.size(); ++j) {
-                    grad_layer.biases[j] += scalar * l1_subgradient(layer.biases[j]);
+                    grad_layer.biases[j] += std::tanh(layer.biases[j] / temperature);
                 }
             }
         }
-        };
-    term.smooth = false;
+        validate_gradients_like(network, gradients);
+    };
+    term.smooth = true;
     term.includes_biases = include_biases;
     term.coefficient = scalar;
     return term;
@@ -946,8 +1020,6 @@ RegularizationTerm make_l1_regularization_Proximal(
             "L1 regularization scalar must be finite and non-negative."
         );
     }
-
-
 
     RegularizationTerm term;
     term.name = "L1 Regularization";
@@ -972,15 +1044,18 @@ RegularizationTerm make_l1_regularization_Proximal(
         return l1_sum;
     };
     term.proximal = true;
-    term.proximal_update = [scalar, include_biases](MLP& network, const double step_size) {
+    term.proximal_update = [scalar, include_biases](MLP &network, const double step_size)
+    {
         validate_network(network);
-        if (!std::isfinite(step_size) || step_size <= 0.0) {
+        if (!std::isfinite(step_size) || step_size <= 0.0)
+        {
             throw std::invalid_argument(
                 "Proximal L1 requires a positive finite step size."
             );
         }
         const double threshold = step_size * scalar;
-        if (!std::isfinite(threshold)) {
+        if (!std::isfinite(threshold))
+        {
             throw std::overflow_error(
                 "Proximal L1 threshold is not finite."
             );
@@ -989,18 +1064,23 @@ RegularizationTerm make_l1_regularization_Proximal(
             const double magnitude = std::max(0.0, std::abs(value) - threshold);
             return std::copysign(magnitude, value);
         };
-        for (DenseLayer& layer : network.layers) {
-            for (double& weight : layer.weights) {
+        for (DenseLayer& layer : network.layers)
+        {
+            for (double& weight : layer.weights)
+            {
                 weight = shrink(weight);
             }
-            if (include_biases) {
-                for (double& bias : layer.biases) {
+            if (include_biases)
+            {
+                for (double& bias : layer.biases)
+                {
                     bias = shrink(bias);
                 }
             }
         }
         validate_network(network);
     };
+    term.add_gradient = {};
     term.smooth = false;
     term.includes_biases = include_biases;
     term.coefficient = scalar;
@@ -1024,20 +1104,18 @@ RegularizationTerm make_l1_regularization_subgradient(
         );
 	}
 
-
-
 	RegularizationTerm term;
     term.name = "L1 Regularization";
     term.value = [include_biases](const MLP& network) -> double {
         double l1_sum = 0.0;
         for (const auto& layer : network.layers) {
             for (const auto& weight : layer.weights) {
-                    l1_sum += std::abs(weight);
-                    if (!std::isfinite(l1_sum)) {
-                        throw std::overflow_error(
-                            "L1 regularization sum overflowed."
-                        );
-                    }
+                l1_sum += std::abs(weight);
+                if (!std::isfinite(l1_sum)) {
+                    throw std::overflow_error(
+                        "L1 regularization sum overflowed."
+                    );
+                }
             }
             if (include_biases) {
                 for (double bias : layer.biases) {
@@ -1079,25 +1157,276 @@ RegularizationTerm make_l1_regularization_subgradient(
 
 #pragma region Elastic Net Regularization
 
-/// <summary>
-/// Creates an Elastic Net regularization term that combines L1 and L2 penalties with the specified strengths.
-/// </summary>
-/// <param name="L1_scalar">The value specifying the strength of the L1 regularization term</param>
-/// <param name="L2_scalar">The value specifying the strength of the L2 regularization term</param>
-/// <param name="include_biases">If true, include bias parameters in the regularization; otherwise only apply to weights. Default is false.</param>
-/// <returns></returns>
 RegularizationTerm make_elastic_net_regularization(
-    const double L1_scalar,
-    const double L2_scalar,
-	const bool include_biases
+    const ElasticNetOptions options
 )
 {
-    static_cast<void>(L1_scalar);
-    static_cast<void>(L2_scalar);
-    static_cast<void>(include_biases);
-    throw std::logic_error(
-        "Phase 1 exercise stub: implement make_elastic_net_regularization."
-    );
+    if (!std::isfinite(options.l1_coefficient) ||
+        options.l1_coefficient < 0.0) {
+        throw std::invalid_argument(
+            "Elastic-net L1 coefficient must be finite and non-negative."
+        );
+    }
+
+    if (!std::isfinite(options.l2_coefficient) ||
+        options.l2_coefficient < 0.0) {
+        throw std::invalid_argument(
+            "Elastic-net L2 coefficient must be finite and non-negative."
+        );
+    }
+
+    switch (options.l1.method) {
+    case L1Method::Subgradient:
+    case L1Method::Proximal:
+        break;
+
+    case L1Method::EpsilonSmooth:
+        if (!std::isfinite(options.l1.epsilon) ||
+            options.l1.epsilon <= 0.0) {
+            throw std::invalid_argument(
+                "Epsilon-smoothed elastic net requires a positive finite epsilon."
+            );
+        }
+        break;
+
+    case L1Method::LogCoshSmooth:
+        if (!std::isfinite(options.l1.temperature) ||
+            options.l1.temperature <= 0.0) {
+            throw std::invalid_argument(
+                "Log-cosh-smoothed elastic net requires a positive finite temperature."
+            );
+        }
+        break;
+
+    default:
+        throw std::invalid_argument("Invalid elastic-net L1 method.");
+    }
+
+    const bool use_proximal_l1 =
+        options.l1.method == L1Method::Proximal &&
+        options.l1_coefficient > 0.0;
+
+    const auto l1_value = [l1_options = options.l1](const double value) -> double
+    {
+        switch (l1_options.method)
+        {
+            case L1Method::Subgradient:
+            case L1Method::Proximal:
+                return std::abs(value);
+
+            case L1Method::EpsilonSmooth:
+                // max{0, sqrt(value^2 + eps^2) - eps}
+                return std::max(0.0, std::hypot(value, l1_options.epsilon) - l1_options.epsilon);
+
+            case L1Method::LogCoshSmooth:
+            {
+                const double magnitude = std::abs(value);
+                const double scaled =
+                    magnitude / l1_options.temperature;
+
+                // Stable form of T * log(cosh(x / T)).
+                return magnitude +
+                    l1_options.temperature *
+                        std::log1p(std::exp(-2.0 * scaled)) -
+                    l1_options.temperature * std::log(2.0);
+            }
+
+            default:
+                throw std::invalid_argument("Invalid elastic-net L1 method.");
+        }
+    };
+    const auto l1_gradient = [l1_options = options.l1](const double value) {
+        switch (l1_options.method) {
+        case L1Method::Subgradient:
+            if (value > 0.0) {
+                return 1.0;
+            }
+            if (value < 0.0) {
+                return -1.0;
+            }
+            return 0.0;
+
+        case L1Method::EpsilonSmooth:
+            return value / std::hypot(value, l1_options.epsilon);
+
+        case L1Method::LogCoshSmooth:
+            return std::tanh(value / l1_options.temperature);
+
+        case L1Method::Proximal:
+            throw std::logic_error(
+                "Proximal L1 must use proximal_update, not an L1 gradient."
+            );
+
+        default:
+            throw std::invalid_argument("Invalid elastic-net L1 method.");
+        }
+    };
+
+    RegularizationTerm term;
+    term.name = "Elastic net regularization";
+    term.value = [options, l1_value](const MLP &network)
+    {
+        validate_network(network);
+        double total = 0.0;
+        const auto add_parameter = [&](const double value)
+        {
+            const double contribution = options.l1_coefficient * l1_value(value) +
+                options.l2_coefficient * value * value;
+            if (!std::isfinite(contribution))
+            {
+                throw std::overflow_error(
+                    "Elastic-net regularization value overflowed."
+                );
+            }
+            total += contribution;
+            if (!std::isfinite(total)) {
+                throw std::overflow_error(
+                    "Elastic-net regularization value overflowed."
+                );
+            }
+        };
+
+        for (const DenseLayer& layer : network.layers){
+            for (const double weight : layer.weights){
+                add_parameter(weight);
+            }
+            if (options.l1.include_biases) {
+                for (const double bias : layer.biases) {
+                    add_parameter(bias);
+                }
+            }
+        }
+
+        return total;
+    };
+
+        if (!use_proximal_l1 || options.l2_coefficient > 0.0) {
+        term.add_gradient =
+            [options, use_proximal_l1, l1_gradient](
+                const MLP& network,
+                NetworkGradients& gradients
+            ) {
+                validate_network(network);
+                validate_gradients_like(network, gradients);
+
+                const auto add_parameter_gradient = [&](const double value) {
+                    double result =
+                        2.0 * options.l2_coefficient * value;
+
+                    if (!use_proximal_l1 &&
+                        options.l1_coefficient > 0.0) {
+                        result +=
+                            options.l1_coefficient * l1_gradient(value);
+                    }
+
+                    if (!std::isfinite(result)) {
+                        throw std::overflow_error(
+                            "Elastic-net gradient contribution overflowed."
+                        );
+                    }
+
+                    return result;
+                };
+
+                for (std::size_t layer_index = 0;
+                     layer_index < network.layers.size();
+                     ++layer_index) {
+                    const DenseLayer& layer = network.layers[layer_index];
+                    LayerGradients& gradient_layer =
+                        gradients.layers[layer_index];
+
+                    for (std::size_t index = 0;
+                         index < layer.weights.size();
+                         ++index) {
+                        gradient_layer.weights[index] +=
+                            add_parameter_gradient(layer.weights[index]);
+                    }
+
+                    if (options.l1.include_biases) {
+                        for (std::size_t index = 0;
+                             index < layer.biases.size();
+                             ++index) {
+                            gradient_layer.biases[index] +=
+                                add_parameter_gradient(layer.biases[index]);
+                        }
+                    }
+                }
+
+                validate_gradients_like(network, gradients);
+            };
+    }
+
+    if (use_proximal_l1) {
+        term.proximal = true;
+
+        term.proximal_update = [options](
+            MLP& network,
+            const double effective_step_size
+        ) {
+            validate_network(network);
+
+            if (!std::isfinite(effective_step_size) ||
+                effective_step_size <= 0.0) {
+                throw std::invalid_argument(
+                    "Proximal elastic net requires a positive finite step size."
+                );
+            }
+
+            const double threshold =
+                effective_step_size * options.l1_coefficient;
+
+            if (!std::isfinite(threshold)) {
+                throw std::overflow_error(
+                    "Proximal elastic-net threshold overflowed."
+                );
+            }
+
+            const auto shrink = [threshold](const double value) {
+                const double magnitude =
+                    std::max(0.0, std::abs(value) - threshold);
+                return std::copysign(magnitude, value);
+            };
+
+            for (DenseLayer& layer : network.layers) {
+                for (double& weight : layer.weights) {
+                    weight = shrink(weight);
+                }
+
+                if (options.l1.include_biases) {
+                    for (double& bias : layer.biases) {
+                        bias = shrink(bias);
+                    }
+                }
+            }
+
+            validate_network(network);
+        };
+    }
+
+    term.smooth =
+        options.l1_coefficient == 0.0 ||
+        options.l1.method == L1Method::EpsilonSmooth ||
+        options.l1.method == L1Method::LogCoshSmooth;
+
+    term.includes_biases = options.l1.include_biases;
+
+    // Both elastic-net strengths are already used inside value/gradient.
+    term.coefficient = 1.0;
+
+    return term;
+}
+
+RegularizationTerm make_elastic_net_regularization(
+    const double l1_coefficient,
+    const double l2_coefficient,
+    const bool include_biases
+)
+{
+    ElasticNetOptions options;
+    options.l1_coefficient = l1_coefficient;
+    options.l2_coefficient = l2_coefficient;
+    options.l1.include_biases = include_biases;
+    return make_elastic_net_regularization(options);
 }
 
 #pragma endregion

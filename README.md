@@ -134,7 +134,8 @@ The CMake library target is `nncpp`, with the consumer-facing alias
 - Stable sigmoid, normal PDF/CDF helpers, forward caches, manual backward
   propagation, batch gradients, and finite-difference checks.
 - Binary cross-entropy, softmax cross-entropy, activated-output MSE, objective
-  composition, L2, L1 subgradient, and proximal-L1 regularization.
+  composition, L2, configurable L1 (subgradient, proximal, epsilon-smooth,
+  and log-cosh-smooth), and elastic-net regularization.
 - SGD, Momentum SGD, AdaGrad, RMSProp, Adam, AdamW, and cautious AdamW.
 - Full-batch, mini-batch, and stochastic training with deterministic shuffling.
 - Training stopping conditions and `TrainingReport` streaming.
@@ -156,6 +157,42 @@ ctest --test-dir build -C Release -L Regularization --output-on-failure
 The legacy `self_checks.cpp` executable remains a broad regression harness.
 New behavior should normally receive a focused test under `tests/` and a CTest
 label.
+
+## Configuring elastic net
+
+The short form uses an L1 subgradient and excludes biases:
+
+```cpp
+const RegularizationTerm elastic_net =
+    make_elastic_net_regularization(1e-4, 5e-4);
+```
+
+For an L1 method with additional parameters, use `ElasticNetOptions`. The
+proximal choice applies L2 through backpropagation, then soft-thresholds the
+selected parameters with `step_size * l1_coefficient` after each optimizer
+step.
+
+```cpp
+ElasticNetOptions options;
+options.l1_coefficient = 1e-4;
+options.l2_coefficient = 5e-4;
+options.l1.method = L1Method::Proximal;
+options.l1.include_biases = false;
+
+const ObjectiveConfig objective = make_objective_config(
+    make_binary_cross_entropy_objective(),
+    make_elastic_net_regularization(options)
+);
+```
+
+Smooth alternatives use the same options object:
+
+```cpp
+options.l1.method = L1Method::EpsilonSmooth;
+options.l1.epsilon = 1e-5;
+// Or: options.l1.method = L1Method::LogCoshSmooth;
+//     options.l1.temperature = 1e-2;
+```
 
 ## Installation for another CMake project
 
