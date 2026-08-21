@@ -127,6 +127,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\common.cpp" />
+    <ClCompile Include="..\src\mlp.cpp" />
+    <ClCompile Include="..\src\objective_functions.cpp" />
+    <ClCompile Include="..\src\optimizers.cpp" />
+    <ClCompile Include="..\src\train.cpp" />
+    <ClCompile Include="..\src\wolfe_analysis.cpp" />
     <ClCompile Include="common.cpp" />
     <ClCompile Include="examples.cpp" />
     <ClCompile Include="mlp.cpp" />

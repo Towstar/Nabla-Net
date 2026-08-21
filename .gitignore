@@ -9,6 +9,7 @@
 *.user
 *.userosscache
 *.sln.docstates
+.vscode/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -368,3 +369,26 @@ NNCPPP-Practice/local-notes/
 /.codex-tmp/ce-check
 /NNCPPP-Practice/notes/PATH.md
 /NNCPPP-Practice/.github/copilot-instructions.md
+
+# CMake and local command-line verification outputs
+.codex-cmake-build*/
+.codex-build-check.exe
+.test-*.exe
+
+# CMake-generated build trees
+/build/
+/build-*/
+/cmake-build-*/
+
+# Codex and other local scratch directories
+/.codex-tmp/
+**/.codex-tmp/
+
+# LaTeX auxiliary output; keep editable .tex sources and intentional rendered
+# documents such as PDFs/SVGs unless they are otherwise ignored.
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.out

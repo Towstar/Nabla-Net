@@ -1,0 +1,25 @@
+name: Windows CMake and CTest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DNNCPP_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run labeled optimizer tests
+        run: ctest --test-dir build -C Release -L Optimizers --output-on-failure
+
+      - name: Run complete CTest suite
+        run: ctest --test-dir build -C Release --output-on-failure

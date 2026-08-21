@@ -32,7 +32,10 @@ void require_near(
 )
 {
     if (std::abs(actual - expected) > tolerance) {
-        throw std::runtime_error(std::string(message));
+        std::ostringstream details;
+        details << message << " (actual=" << actual
+                << ", expected=" << expected << ")";
+        throw std::runtime_error(details.str());
     }
 }
 
@@ -891,10 +894,11 @@ void run_mse_objective_checks()
 
     // Convention under test:
     //
-    //     loss = (1 / output_width) * sum((logit - target)^2)
-    //     d_loss/d_logit = 2 * (logit - target) / output_width
+    //     loss = (1 / output_width) * sum((output - target)^2)
+    //     d_loss/d_output = 2 * (output - target) / output_width
     //
-    // The callbacks receive output logits. MSE must not apply sigmoid here.
+    // The callbacks receive the activated network output. The backward pass
+    // pulls this derivative through the configured output activation.
     const Values logits{ 1.0, -1.0 };
     const Values targets{ 0.5, 0.0 };
 
@@ -994,6 +998,7 @@ void run_mse_objective_checks()
     }, "MSE gradient should reject infinite targets");
 
     MLP configured_network = make_zero_network({ 1, 2 });
+    configured_network.layer_activations = { Activations::Linear };
     configured_network.layers[0].biases = { 1.0, -1.0 };
     const ForwardCache cache = forward_pass(configured_network, { 0.0 });
 
@@ -1001,7 +1006,7 @@ void run_mse_objective_checks()
         sample_cost(configured_network, cache, targets, mse),
         0.625,
         1e-12,
-        "MSE sample cost should evaluate the cache's output logits"
+        "MSE sample cost should evaluate the cache's activated output"
     );
 
     const Dataset batch{
@@ -1040,6 +1045,7 @@ void run_mse_objective_checks()
 void run_sgd_optimizer_checks()
 {
     MLP network = make_zero_network({ 1, 1 });
+    network.layer_activations = { Activations::Linear };
     network.layers[0].weights = { 0.5 };
     network.layers[0].biases = { 0.25 };
 
@@ -1179,6 +1185,7 @@ void run_sgd_optimizer_checks()
 void run_momentum_sgd_optimizer_checks()
 {
     MLP network = make_zero_network({ 1, 1 });
+    network.layer_activations = { Activations::Linear };
     network.layers[0].weights = { 0.5 };
     network.layers[0].biases = { 0.25 };
 
@@ -1356,6 +1363,7 @@ void run_momentum_sgd_optimizer_checks()
 void run_adagrad_optimizer_checks()
 {
     MLP network = make_zero_network({ 1, 1 });
+    network.layer_activations = { Activations::Linear };
     network.layers[0].weights = { 0.5 };
     network.layers[0].biases = { 0.25 };
 
@@ -1769,6 +1777,7 @@ void run_adagrad_optimizer_checks()
 void run_rmsprop_optimizer_checks()
 {
     MLP network = make_zero_network({ 1, 1 });
+    network.layer_activations = { Activations::Linear };
     network.layers[0].weights = { 0.5 };
     network.layers[0].biases = { 0.25 };
 
@@ -2051,6 +2060,7 @@ void run_rmsprop_optimizer_checks()
 void run_adam_optimizer_checks()
 {
     MLP network = make_zero_network({ 1, 1 });
+    network.layer_activations = { Activations::Linear };
     network.layers[0].weights = { 0.5 };
     network.layers[0].biases = { 0.25 };
 
@@ -4931,6 +4941,7 @@ void run_training_contract_checks()
 
     {
         MLP network = make_zero_network({ 1, 1 });
+        network.layer_activations = { Activations::Linear };
         network.layers[0].weights[0] = 0.5;
         network.layers[0].biases[0] = 0.25;
 
@@ -4969,6 +4980,7 @@ void run_training_contract_checks()
 
     {
         MLP network = make_zero_network({ 1, 1 });
+        network.layer_activations = { Activations::Linear };
         network.layers[0].weights[0] = 0.5;
         network.layers[0].biases[0] = 0.25;
 
@@ -5154,12 +5166,6 @@ void run_phase_one_stub_checks()
     require(std::string(adam->name()) == "Adam",
         "built-in Adam should report its name");
 
-    require(!Optimizers::AdamW.make,
-        "AdamW exercise spec should expose an empty factory until implemented");
-    require(!Optimizers::LBFGS.make,
-        "LBFGS exercise spec should expose an empty factory until implemented");
-
-    std::cout << "[SCAFFOLD] Remaining Phase 1 API stubs are linkable and intentionally unimplemented\n";
 }
 
 void run_all_self_checks()
