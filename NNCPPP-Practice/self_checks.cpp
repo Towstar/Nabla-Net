@@ -76,6 +76,14 @@ public:
     }
 };
 
+/// <summary>
+/// Direct data members of <c>TrainingTrace</c>:
+/// <para><c>reset_calls</c> (<c>std::size_t</c>).</para>
+/// <para><c>step_calls</c> (<c>std::size_t</c>).</para>
+/// <para><c>saw_regularizer</c> (<c>bool</c>).</para>
+/// <para><c>batch_sizes</c> (<c>std::vector&lt;std::size_t&gt;</c>).</para>
+/// <para><c>first_input_values</c> (<c>std::vector&lt;double&gt;</c>).</para>
+/// </summary>
 struct TrainingTrace
 {
     std::size_t reset_calls{};
@@ -2076,6 +2084,12 @@ void run_adam_optimizer_checks()
     constexpr double beta2 = 0.999;
     constexpr double epsilon = 1e-8;
 
+    /// <summary>
+    /// Direct data members of <c>ExpectedUpdate</c>:
+    /// <para><c>first_moment</c> (<c>double</c>).</para>
+    /// <para><c>second_moment</c> (<c>double</c>).</para>
+    /// <para><c>update</c> (<c>double</c>).</para>
+    /// </summary>
     struct ExpectedUpdate {
         double first_moment;
         double second_moment;
@@ -3167,6 +3181,13 @@ void run_batch_gradient_checks()
     std::cout << "[PASS] full-batch gradients\n";
 }
 
+/// <summary>
+/// Direct data members of <c>GradientCheckSummary</c>:
+/// <para><c>checked_parameter_count</c> (<c>std::size_t</c>).</para>
+/// <para><c>maximum_absolute_error</c> (<c>double</c>).</para>
+/// <para><c>maximum_relative_error</c> (<c>double</c>).</para>
+/// <para><c>worst_parameter</c> (<c>std::string</c>).</para>
+/// </summary>
 struct GradientCheckSummary {
     std::size_t checked_parameter_count{};
     double maximum_absolute_error{};

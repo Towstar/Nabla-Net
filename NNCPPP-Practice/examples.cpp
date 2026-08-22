@@ -23,16 +23,31 @@
 
 namespace {
 
+/// <summary>
+/// Direct data members of <c>NumericRows</c>:
+/// <para><c>features</c> (<c>std::vector&lt;Values&gt;</c>).</para>
+/// <para><c>targets</c> (<c>std::vector&lt;double&gt;</c>).</para>
+/// </summary>
 struct NumericRows {
     std::vector<Values> features;
     std::vector<double> targets;
 };
 
+/// <summary>
+/// Direct data members of <c>DatasetSplit</c>:
+/// <para><c>training</c> (<c>Dataset</c>).</para>
+/// <para><c>validation</c> (<c>Dataset</c>).</para>
+/// </summary>
 struct DatasetSplit {
     Dataset training;
     Dataset validation;
 };
 
+/// <summary>
+/// Direct data members of <c>MinMaxScaler</c>:
+/// <para><c>minimum</c> (<c>Values</c>).</para>
+/// <para><c>range</c> (<c>Values</c>).</para>
+/// </summary>
 struct MinMaxScaler {
     Values minimum;
     Values range;
@@ -92,6 +107,11 @@ MinMaxScaler fit_min_max_scaler(const std::vector<Values>& feature_rows)
     return scaler;
 }
 
+/// <summary>
+/// Direct data members of <c>TargetScaler</c>:
+/// <para><c>minimum</c> (<c>double</c>).</para>
+/// <para><c>range</c> (<c>double</c>).</para>
+/// </summary>
 struct TargetScaler {
     double minimum{};
     double range{};

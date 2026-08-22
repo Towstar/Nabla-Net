@@ -16,6 +16,14 @@ enum class OptimizerRequirement {
     DeterministicFullBatch
 };
 
+/// <summary>
+/// Direct data members of <c>OptimizerContext</c>:
+/// <para><c>network</c> (<c>MLP</c>).</para>
+/// <para><c>batch</c> (<c>const Dataset</c>).</para>
+/// <para><c>objective</c> (<c>const ObjectiveConfig</c>).</para>
+/// <para><c>current_loss</c> (<c>double</c>).</para>
+/// <para><c>current_gradient</c> (<c>NetworkGradients</c>).</para>
+/// </summary>
 struct OptimizerContext {
     MLP& network;
     const Dataset& batch;
@@ -26,16 +34,37 @@ struct OptimizerContext {
 
 class Optimizer {
 public:
+    /// <summary>
+    /// Destroys an optimizer through its polymorphic interface.
+    /// </summary>
     virtual ~Optimizer() = default;
 
+    /// <summary>
+    /// Returns the optimizer's stable display name.
+    /// </summary>
     virtual const char* name() const noexcept = 0;
+
+    /// <summary>
+    /// Resets state for a new network or training run.
+    /// </summary>
     virtual void reset(const MLP& network) = 0;
+
+    /// <summary>
+    /// Performs one optimizer update using the supplied training context.
+    /// </summary>
     virtual TrainingStepResult step(OptimizerContext& context) = 0;
 };
 
 // stores a function that creates a new optimizer instance
 using OptimizerFactory = std::function<std::unique_ptr<Optimizer>()>;
 
+/// <summary>
+/// Direct data members of <c>OptimizerSpec</c>:
+/// <para><c>name</c> (<c>std::string</c>).</para>
+/// <para><c>requirement</c> (<c>OptimizerRequirement</c>).</para>
+/// <para><c>make</c> (<c>OptimizerFactory</c>).</para>
+/// <para><c>supports_proximal</c> (<c>bool</c>).</para>
+/// </summary>
 struct OptimizerSpec {
     std::string name;
     OptimizerRequirement requirement{
@@ -48,6 +77,10 @@ struct OptimizerSpec {
 using LearningRateSchedule =
 std::function<double(std::size_t update_index)>;
 
+/// <summary>
+/// Direct data members of <c>SGDOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// </summary>
 struct SGDOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {
@@ -56,6 +89,11 @@ struct SGDOptions {
     };
 };
 
+/// <summary>
+/// Direct data members of <c>MomentumSGDOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>momentum</c> (<c>double</c>).</para>
+/// </summary>
 struct MomentumSGDOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {
@@ -66,6 +104,11 @@ struct MomentumSGDOptions {
     double momentum{ 0.5 };
 };
 
+/// <summary>
+/// Direct data members of <c>AdaGradOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// </summary>
 struct AdaGradOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {
@@ -76,6 +119,12 @@ struct AdaGradOptions {
     double epsilon{ 1e-8 };
 };
 
+/// <summary>
+/// Direct data members of <c>RMSPropOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>decay</c> (<c>double</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// </summary>
 struct RMSPropOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {return 0.01; }
@@ -85,6 +134,13 @@ struct RMSPropOptions {
 };
 
 
+/// <summary>
+/// Direct data members of <c>AdamOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>beta1</c> (<c>double</c>).</para>
+/// <para><c>beta2</c> (<c>double</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// </summary>
 struct AdamOptions {
     // Default options as suggested in the original paper.
     LearningRateSchedule learning_rate_schedule{
@@ -95,6 +151,15 @@ struct AdamOptions {
     double epsilon = 1e-8;
 };
 
+/// <summary>
+/// Direct data members of <c>AdamWOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>beta1</c> (<c>double</c>).</para>
+/// <para><c>beta2</c> (<c>double</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// <para><c>weight_decay</c> (<c>double</c>).</para>
+/// <para><c>decay_biases</c> (<c>bool</c>).</para>
+/// </summary>
 struct AdamWOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {
@@ -110,6 +175,16 @@ struct AdamWOptions {
     bool decay_biases{ false };
 };
 
+/// <summary>
+/// Direct data members of <c>CAdamWOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>beta1</c> (<c>double</c>).</para>
+/// <para><c>beta2</c> (<c>double</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// <para><c>weight_decay</c> (<c>double</c>).</para>
+/// <para><c>decay_biases</c> (<c>bool</c>).</para>
+/// <para><c>cautious_epsilon</c> (<c>double</c>).</para>
+/// </summary>
 struct CAdamWOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {
@@ -125,6 +200,12 @@ struct CAdamWOptions {
     double cautious_epsilon{ 1.0 };
 };
 
+/// <summary>
+/// Direct data members of <c>LBFGSOptions</c>:
+/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
+/// <para><c>decay</c> (<c>double</c>).</para>
+/// <para><c>epsilon</c> (<c>double</c>).</para>
+/// </summary>
 struct LBFGSOptions {
     LearningRateSchedule learning_rate_schedule{
         [](std::size_t) {return 0.01; }
@@ -133,22 +214,46 @@ struct LBFGSOptions {
     double epsilon = 1e-8;
 };
 
+/// <summary>
+/// Creates a stochastic-gradient-descent optimizer specification.
+/// </summary>
 OptimizerSpec make_sgd(
     SGDOptions options = {}
 );
 
+/// <summary>
+/// Creates a momentum stochastic-gradient-descent optimizer specification.
+/// </summary>
 OptimizerSpec make_momentum_sgd(MomentumSGDOptions options = {});
 
+/// <summary>
+/// Creates an AdaGrad optimizer specification.
+/// </summary>
 OptimizerSpec make_adagrad(AdaGradOptions = {});
 
+/// <summary>
+/// Creates an RMSProp optimizer specification.
+/// </summary>
 OptimizerSpec make_rmsprop(RMSPropOptions options = {});
 
+/// <summary>
+/// Creates an Adam optimizer specification.
+/// </summary>
 OptimizerSpec make_adam(AdamOptions options = {});
 
+/// <summary>
+/// Creates an AdamW optimizer specification.
+/// </summary>
 OptimizerSpec make_adamw(AdamWOptions options = {});
 
+/// <summary>
+/// Creates a cautious AdamW optimizer specification.
+/// </summary>
 OptimizerSpec make_cadamw(CAdamWOptions options = {});
 
+/// <summary>
+/// Creates an L-BFGS optimizer specification.
+/// </summary>
 OptimizerSpec make_lbfgs(LBFGSOptions options = {});
 
 namespace Optimizers {
@@ -236,6 +341,9 @@ struct TrainingReport {
     std::vector<double> parameter_changes;
 };
 
+/// <summary>
+/// Creates a validated specification for a caller-provided optimizer factory.
+/// </summary>
 OptimizerSpec make_custom_optimizer(
     std::string name,
     OptimizerRequirement requirement,
@@ -243,14 +351,26 @@ OptimizerSpec make_custom_optimizer(
     bool supports_proximal = false
 );
 
+/// <summary>
+/// Validates an optimizer specification and its factory callback.
+/// </summary>
 void validate_optimizer_spec(
     const OptimizerSpec& optimizer
 );
 
+/// <summary>
+/// Validates the stopping, batching, and shuffle settings for training.
+/// </summary>
 void validate_training_config(
     const TrainingConfig& config
 );
 
+/// <summary>
+/// Writes a human-readable training report to an output stream.
+/// </summary>
 std::ostream& operator<<(std::ostream& output, const TrainingReport& report);
 
+/// <summary>
+/// Converts a training stop reason to a display string.
+/// </summary>
 std::string trainingStopReasonToString(TrainingStopReason reason);

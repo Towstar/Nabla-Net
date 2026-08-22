@@ -384,6 +384,9 @@ NNCPPP-Practice/local-notes/
 /.codex-tmp/
 **/.codex-tmp/
 
+# Local-only reusable development helpers (intentionally not versioned).
+/.dev-scripts/
+
 # LaTeX auxiliary output; keep editable .tex sources and intentional rendered
 # documents such as PDFs/SVGs unless they are otherwise ignored.
 *.aux
