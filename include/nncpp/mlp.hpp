@@ -26,6 +26,11 @@ using ScalarActivationDerivative = std::function<double(
     ActivationParameter parameter
 )>;
 
+using ScalarActivationSecondDerivative = std::function<double(
+    double input,
+    ActivationParameter parameter
+)>;
+
 using ActivationForward = std::function<Values(
     const Values& pre_activations
 )>;
@@ -36,16 +41,36 @@ using ActivationBackward = std::function<Values(
     const Values& upstream_gradient
 )>;
 
+// Computes J(z) * pre_activation_tangent.
+using ActivationJvp = std::function<Values(
+    const Values& pre_activations,
+    const Values& pre_activation_tangent
+)>;
+
+// Computes the directional derivative of J(z)^T * upstream_gradient.
+using ActivationBackwardJvp = std::function<Values(
+    const Values& pre_activations,
+    const Values& pre_activation_tangent,
+    const Values& upstream_gradient,
+    const Values& upstream_gradient_tangent
+)>;
+
 /// <summary>
 /// Direct data members of <c>ActivationFunction</c>:
 /// <para><c>name</c> (<c>std::string</c>).</para>
 /// <para><c>forward</c> (<c>ActivationForward</c>).</para>
 /// <para><c>backward</c> (<c>ActivationBackward</c>).</para>
+/// <para><c>jvp</c> (<c>ActivationJvp</c>, optional).</para>
+/// <para><c>backward_jvp</c> (<c>ActivationBackwardJvp</c>, optional).</para>
 /// </summary>
 struct ActivationFunction {
     std::string name;
     ActivationForward forward;
     ActivationBackward backward;
+    // First-order custom activations may leave these empty. JVP- and
+    // HVP-based APIs reject such an activation with std::invalid_argument.
+    ActivationJvp jvp;
+    ActivationBackwardJvp backward_jvp;
 };
 
 /// <summary>
@@ -55,6 +80,17 @@ ActivationFunction make_elementwise_activation(
     std::string name,
     ScalarActivationForward forward,
     ScalarActivationDerivative derivative,
+    ActivationParameter parameter = std::nullopt
+);
+
+/// <summary>
+/// Creates a twice-differentiable vector activation from scalar callbacks.
+/// </summary>
+ActivationFunction make_elementwise_activation(
+    std::string name,
+    ScalarActivationForward forward,
+    ScalarActivationDerivative derivative,
+    ScalarActivationSecondDerivative second_derivative,
     ActivationParameter parameter = std::nullopt
 );
 
@@ -163,6 +199,11 @@ struct NetworkGradients {
     std::vector<LayerGradients> layers;
 };
 
+// A parameter-space tangent shares the weight and bias layout of a gradient.
+// This is intentionally distinct from NetworkDirection, which remains the
+// public alias used by line-search code.
+using NetworkTangent = NetworkGradients;
+
 using SampleLossFunction = std::function<double(
     const Values& output_logits,
     const Values& target
@@ -171,6 +212,14 @@ using SampleLossFunction = std::function<double(
 using SampleLossGradientFunction = std::function<Values(
     const Values& output_logits,
     const Values& target
+)>;
+
+// Computes the Hessian-vector product of a scalar sample loss with respect
+// to its immediate objective input. The target is held constant.
+using SampleLossHessianVectorProduct = std::function<Values(
+    const Values& objective_input,
+    const Values& target,
+    const Values& objective_input_tangent
 )>;
 
 enum class ObjectiveInputDomain {
@@ -182,11 +231,16 @@ enum class ObjectiveInputDomain {
 /// Direct data members of <c>ObjectiveFunctions</c>:
 /// <para><c>sample_loss</c> (<c>SampleLossFunction</c>).</para>
 /// <para><c>sample_loss_gradient</c> (<c>SampleLossGradientFunction</c>).</para>
+/// <para><c>sample_loss_hessian_vector_product</c> (<c>SampleLossHessianVectorProduct</c>, optional).</para>
 /// <para><c>input_domain</c> (<c>ObjectiveInputDomain</c>).</para>
 /// </summary>
 struct ObjectiveFunctions {
     SampleLossFunction sample_loss;
     SampleLossGradientFunction sample_loss_gradient;
+    // First-order-only objectives remain valid for forward/backward APIs.
+    // Parameter-HVP APIs require this loss-input HVP callback and reject
+    // objectives that omit it.
+    SampleLossHessianVectorProduct sample_loss_hessian_vector_product;
     ObjectiveInputDomain input_domain{
         ObjectiveInputDomain::PreActivation
     };
@@ -303,6 +357,7 @@ struct TrainingStepResult {
 /// <para><c>name</c> (<c>std::string</c>).</para>
 /// <para><c>value</c> (<c>std::function&lt;double(const MLP&amp;)&gt;</c>).</para>
 /// <para><c>add_gradient</c> (<c>std::function&lt;void(const MLP&amp;, NetworkGradients&amp;)&gt;</c>).</para>
+/// <para><c>add_gradient_jvp</c> (<c>std::function&lt;void(const MLP&amp;, const NetworkTangent&amp;, NetworkGradients&amp;)&gt;</c>, optional).</para>
 /// <para><c>proximal</c> (<c>bool</c>).</para>
 /// <para><c>proximal_update</c> (<c>std::function&lt;void(MLP&amp;, double effective_step_size)&gt;</c>).</para>
 /// <para><c>smooth</c> (<c>bool</c>).</para>
@@ -318,6 +373,14 @@ struct RegularizationTerm {
     // proximal elastic net, may use this callback for its smooth component
     // and proximal_update for its non-smooth component.
     std::function<void(const MLP&, NetworkGradients&)> add_gradient;
+    // Adds the unscaled directional derivative of add_gradient. It is used
+    // only by complete-objective HVP APIs; the aggregation layer applies
+    // coefficient exactly once, just as it does for add_gradient.
+    std::function<void(
+        const MLP&,
+        const NetworkTangent&,
+        NetworkGradients&
+    )> add_gradient_jvp;
     // The trainer invokes this callback after a base optimizer step, passing
     // the effective step size. It may coexist with add_gradient when the term
     // combines a smooth and a non-smooth penalty.
@@ -342,6 +405,16 @@ struct ObjectiveConfig {
 /// Stores intermediate values to compute gradients without recomputing.
 /// </summary>
 struct ForwardCache {
+    std::vector<Values> activations;
+    std::vector<Values> pre_activations;
+};
+
+/// <summary>
+/// Stores parameter-space tangents corresponding to a ForwardCache.
+/// activations[0] is the all-zero input tangent because this API currently
+/// differentiates only with respect to network parameters.
+/// </summary>
+struct ForwardTangent {
     std::vector<Values> activations;
     std::vector<Values> pre_activations;
 };
@@ -402,6 +475,15 @@ double stable_sigmoid(double x);
 ForwardCache forward_pass(const MLP& network, const Values& input);
 
 /// <summary>
+/// Propagates a parameter-space tangent through a previously computed forward pass.
+/// </summary>
+ForwardTangent forward_jvp(
+    const MLP& network,
+    const ForwardCache& primal_cache,
+    const NetworkTangent& parameter_tangent
+);
+
+/// <summary>
 /// Creates zero-valued gradients with the same layout as a network.
 /// </summary>
 NetworkGradients make_zero_gradients_like(const MLP& network);
@@ -415,6 +497,27 @@ NetworkGradients backward(const MLP& network, const ForwardCache& cache, const V
 /// Backpropagates a specified objective function for one sample.
 /// </summary>
 NetworkGradients backward(const MLP& network, const ForwardCache& cache, const Values& target, const ObjectiveFunctions& objective);
+
+/// <summary>
+/// Computes the default BCE-from-logits sample-loss Hessian-vector product.
+/// </summary>
+NetworkGradients loss_hessian_vector_product(
+    const MLP& network,
+    const ForwardCache& primal_cache,
+    const Values& target,
+    const NetworkTangent& parameter_tangent
+);
+
+/// <summary>
+/// Computes one sample loss Hessian-vector product for a parameter tangent.
+/// </summary>
+NetworkGradients loss_hessian_vector_product(
+    const MLP& network,
+    const ForwardCache& primal_cache,
+    const Values& target,
+    const NetworkTangent& parameter_tangent,
+    const ObjectiveFunctions& objective
+);
 
 /// <summary>
 /// Averages default-objective gradients across a non-empty batch.

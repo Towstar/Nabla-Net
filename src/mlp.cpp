@@ -136,22 +136,72 @@ ActivationFunction make_elementwise_activation(
     return activation;
 }
 
-namespace Activations {
-    const ActivationFunction Tanh = make_elementwise_activation(
-        "tanh",
-        [](double z, ActivationParameter) { return std::tanh(z); },
-        [](double z, ActivationParameter) {
-            const double value = std::tanh(z);
-            return 1.0 - value * value;
+ActivationFunction make_elementwise_activation(
+    std::string name, 
+    ScalarActivationForward forward,
+    ScalarActivationDerivative derivative,
+    ScalarActivationSecondDerivative second_derivative,
+    const ActivationParameter parameter
+) {
+        if (!second_derivative){
+            throw std::invalid_argument("Twice-differentiable activation must provide a second derivative callback.");
         }
-    );
+        ActivationFunction activation = make_elementwise_activation(std::move(name), forward, derivative, parameter);
+        activation.jvp = [derivative, parameter](const Values &pre_activations, const Values &pre_activation_tangent)
+        {
+            if (pre_activations.empty() || pre_activations.size() != pre_activation_tangent.size())
+            {
+                throw std::invalid_argument("Activation JVP inputs must be nonempty and have matching sizes.");
+            }
+            Values res(pre_activations.size(), 0.0);
+            for (std::size_t i = 0; i < res.size(); i++)
+            {
+                const double z = pre_activations[i];
+                const double z_dot = pre_activation_tangent[i];
 
-    const ActivationFunction Linear = make_elementwise_activation(
-        "linear",
-        [](double z, ActivationParameter) { return z; },
-        [](double, ActivationParameter) { return 1.0; }
-    );
+                if (!std::isfinite(z) || !std::isfinite(z_dot))
+                {
+                    throw std::invalid_argument("Activation JVP must be finite.");
+                }
+                res[i] = derivative(z, parameter) * z_dot;
+                if (!std::isfinite(res[i]))
+                    throw std::overflow_error("Activation JVP result is not finite");
+            }
+            return res;
+        };
+        activation.backward_jvp = [derivative, second_derivative, parameter](const Values &pre_activations, const Values &pre_activation_tangent, const Values &upstream_gradient, const Values &upstream_gradient_tangent)
+        {
+            const std::size_t size = pre_activations.size();
+            if (size == 0 || pre_activation_tangent.size() != size || upstream_gradient.size() != size || upstream_gradient_tangent.size() != size)
+            {
+                throw std::invalid_argument(
+                    "Activation backward JVP inputs must be non-empty and have matching sizes."
+                );
+            }
+            Values res(size, 0.0);
+            for (std::size_t i = 0; i < size; i++)
+            {
+                const double z = pre_activations[i];
+                const double z_dot = pre_activation_tangent[i];
+                const double upstream = upstream_gradient[i];
+                const double upstream_dot = upstream_gradient_tangent[i];
 
+                if (!std::isfinite(z) || !std::isfinite(z_dot) || !std::isfinite(upstream) || !std::isfinite(upstream_dot))
+                {
+                    throw std::invalid_argument("Activation backward JVP inputs must be finite.");
+                }
+
+                res[i] = second_derivative(z, parameter) * z_dot * upstream + derivative(z, parameter) * upstream_dot;
+                if (!std::isfinite(res[i]))
+                    throw std::overflow_error("Activation backward JVP result is not finite.");
+            }
+            return res;
+        };
+        return activation;
+    };
+    
+
+namespace Activations {
     /// <summary>
     /// Rectified Linear Unit Hidden Activation Function.
     /// Implemented such that the subgradient value at z = 0 is 0
@@ -160,19 +210,46 @@ namespace Activations {
     /// </summary>
     const ActivationFunction ReLU = make_elementwise_activation(
         "relu",
-        [](double z, ActivationParameter) { return std::max(0.0, z); },
-        [](double z, ActivationParameter) {
-            return z > 0.0 ? 1.0 : 0.0;
-        }
+        [](double z, ActivationParameter)
+        { return std::max(0.0, z); },
+        [](double z, ActivationParameter)
+        { return z > 0.0 ? 1.0 : 0.0; }
+        );
+
+    const ActivationFunction Tanh = make_elementwise_activation(
+        "tanh",
+        [](double z, ActivationParameter)
+        { return std::tanh(z); },
+        [](double z, ActivationParameter)
+        {
+            const double value = std::tanh(z);
+            return 1.0 - value * value;
+        },
+        [](double z, ActivationParameter)
+        {
+            const double value = std::tanh(z);
+            return 2.0 * (std::pow(value, 3)) - 2 * value;
+        });
+
+    const ActivationFunction Linear = make_elementwise_activation(
+        "linear",
+        [](double z, ActivationParameter)
+        { return z; },
+        [](double, ActivationParameter)
+        { return 1.0; },
+        [](double, ActivationParameter)
+        { return 0.0; }
     );
 
     const ActivationFunction LeakyReLU = make_elementwise_activation(
         "leaky_relu",
-        [](double z, ActivationParameter negative_slope) {
+        [](double z, ActivationParameter negative_slope)
+        {
             const double slope = negative_slope.value_or(0.01);
             return z > 0.0 ? z : slope * z;
         },
-        [](double z, ActivationParameter negative_slope) {
+        [](double z, ActivationParameter negative_slope)
+        {
             const double slope = negative_slope.value_or(0.01);
             return z > 0.0 ? 1.0 : slope;
         }
@@ -180,39 +257,52 @@ namespace Activations {
 
     const ActivationFunction ELU = make_elementwise_activation(
         "elu",
-        [](double z, ActivationParameter negative_coefficient) {
+        [](double z, ActivationParameter negative_coefficient)
+        {
             const double coefficient = negative_coefficient.value_or(1.0);
             return z > 0.0
                 ? z
                 : coefficient * (std::exp(z) - 1.0);
         },
-        [](double z, ActivationParameter negative_coefficient) {
+        [](double z, ActivationParameter negative_coefficient)
+        {
             const double coefficient = negative_coefficient.value_or(1.0);
             return z > 0.0
                 ? 1.0
                 : coefficient * std::exp(z);
-        }
-    );
+        });
 
     const ActivationFunction GELU = make_elementwise_activation(
         "gelu",
-        [](double z, ActivationParameter) { return z * normalcdf(z); },
-        [](double z, ActivationParameter) {
+        [](double z, ActivationParameter)
+        { return z * normalcdf(z); },
+        [](double z, ActivationParameter)
+        {
             return normalcdf(z) + z * normalpdf(z);
-        }
-    );
+        },
+        [](double z, ActivationParameter)
+        {
+            return ((2.0 - z * z) * normalpdf(z));
+        });
 
     /// <summary>
     /// Equivalent to swish(z) where beta (trainable parameter) = 1
     /// </summary>
     const ActivationFunction SiLU = make_elementwise_activation(
         "silu",
-        [](double z, ActivationParameter) { return z * stable_sigmoid(z); },
-        [](double z, ActivationParameter) {
+        [](double z, ActivationParameter)
+        { return z * stable_sigmoid(z); },
+        [](double z, ActivationParameter)
+        {
             const double sigmoid = stable_sigmoid(z);
             return sigmoid + z * sigmoid * (1.0 - sigmoid);
-        }
-    );
+        },
+        [](double z, ActivationParameter)
+        {
+            const double sigmoid = stable_sigmoid(z);
+            const double sigmoid_prime = sigmoid * (1 - sigmoid);
+            return sigmoid_prime + sigmoid_prime + z * (sigmoid_prime * (1 - 2 * sigmoid));
+        });
 
     const ActivationFunction Mish = make_elementwise_activation(
         "mish",
@@ -220,24 +310,35 @@ namespace Activations {
             return z * std::tanh(stable_softplus(z));
         },
         [](double z, ActivationParameter) {
-            const double exp_2z = std::exp(2.0 * z);
-            const double exp_z = std::exp(z);
-            const double delta =
-                4.0 * (z + 1.0) +
-                4.0 * exp_2z +
-                std::exp(3.0 * z) +
-                exp_z * (4.0 * z + 6.0);
-            const double omega = 2.0 * exp_z + exp_2z + 2.0;
-            return (exp_z * omega) / (delta * delta);
+            const double sigmoid = stable_sigmoid(z);
+            const double tanh_softplus = std::tanh(stable_softplus(z));
+
+            return tanh_softplus +
+                z * (1.0 - tanh_softplus * tanh_softplus) * sigmoid;
+            },
+        [](double z, ActivationParameter){
+            const double sigmoid = stable_sigmoid(z);
+            const double tanh_softplus = std::tanh(stable_softplus(z));
+            const double one_minus_tanh_squared =
+                1.0 - tanh_softplus * tanh_softplus;
+
+            return 2.0 * one_minus_tanh_squared * sigmoid + z * one_minus_tanh_squared *
+                (sigmoid * (1.0 - sigmoid) - 2.0 * tanh_softplus * sigmoid * sigmoid);
         }
     );
 
     const ActivationFunction Sigmoid = make_elementwise_activation(
         "sigmoid",
-        [](double z, ActivationParameter) { return stable_sigmoid(z); },
-        [](double z, ActivationParameter) {
+        [](double z, ActivationParameter)
+        { return stable_sigmoid(z); },
+        [](double z, ActivationParameter)
+        {
             const double sigmoid = stable_sigmoid(z);
             return (1.0 - sigmoid) * sigmoid;
+        },
+        [](double z, ActivationParameter) { 
+            const double sigmoid = stable_sigmoid(z);
+            return sigmoid * (1.0 - sigmoid) * (1.0 - 2.0 * sigmoid);
         }
     );
 }
@@ -339,6 +440,54 @@ void validate_network(const MLP& network)
 
         if (layer.biases.size() != layer.output_size) {
             throw std::invalid_argument("Layer bias count does not match layer shape.");
+        }
+    }
+}
+
+void validate_forward_inputs(const MLP& network, const ForwardCache& cache){
+    if (cache.activations.size() != network.layer_sizes.size()) {
+        throw std::invalid_argument(
+            "Forward cache activation count does not match network architecture."
+        );
+    }
+
+    if (cache.pre_activations.size() != network.layers.size()) {
+        throw std::invalid_argument(
+            "Forward cache pre-activation count does not match network layers."
+        );
+    }
+
+    for (std::size_t layer_index = 0; layer_index < cache.activations.size(); ++layer_index) {
+        const Values& activation = cache.activations[layer_index];
+
+        if (activation.size() != network.layer_sizes[layer_index]) {
+            throw std::invalid_argument(
+                "Forward cache activation size does not match network architecture."
+            );
+        }
+
+        for (const double value : activation) {
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument("Forward cache activations must be finite.");
+            }
+        }
+    }
+
+    for (std::size_t layer_index = 0;
+         layer_index < cache.pre_activations.size();
+         ++layer_index) {
+        const Values& pre_activation = cache.pre_activations[layer_index];
+
+        if (pre_activation.size() != network.layers[layer_index].output_size) {
+            throw std::invalid_argument(
+                "Forward cache pre-activation size does not match layer output size."
+            );
+        }
+
+        for (const double value : pre_activation) {
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument("Forward cache pre-activations must be finite.");
+            }
         }
     }
 }
@@ -585,6 +734,55 @@ ForwardCache forward_pass(const MLP& network, const Values& input)
     }
 
     return cache;
+}
+
+ForwardTangent forward_jvp(const MLP& network, const ForwardCache& cache, const NetworkTangent& parameter_tangent){
+    validate_network(network);
+    validate_gradients_like(network, parameter_tangent);
+    validate_forward_inputs(network, cache);
+
+    ForwardTangent tangent;
+    tangent.activations.emplace_back(network.layer_sizes.front(), 0.0);
+
+    for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); layer_idx++){
+        const DenseLayer &layer = network.layers[layer_idx];
+        const LayerGradients &layer_tangent = parameter_tangent.layers[layer_idx];
+        const Values &prev_activation = cache.activations[layer_idx];
+        const Values &prev_activation_tangent = tangent.activations[layer_idx];
+
+        Values pre_activation_tangent(layer.output_size, 0.0);
+
+        for (size_t output_idx = 0; output_idx < layer.output_size; output_idx++)
+        {
+            double value = layer_tangent.biases[output_idx];
+
+            for (size_t input_idx = 0; input_idx < layer.input_size; input_idx++)
+            {
+                const std::size_t weight_index = output_idx * layer.input_size + input_idx;
+                value += layer_tangent.weights[weight_index] * prev_activation[input_idx];
+                value += layer.weights[weight_index] * prev_activation_tangent[input_idx];
+            }
+            if (!std::isfinite(value)) {
+                throw std::overflow_error(
+                    "Forward JVP produced a non-finite pre-activation tangent."
+                );
+            }
+            pre_activation_tangent[output_idx] = value;
+        }
+        tangent.pre_activations.push_back(prev_activation_tangent);
+        const ActivationFunction &activation = effective_activation(network, layer_idx);
+        if (!activation.jvp)
+            throw std::invalid_argument("Activation function must supply valid JVP callback");
+        const Values val = activation.jvp(cache.pre_activations[layer_idx], pre_activation_tangent);
+        if (val.size() != cache.pre_activations[layer_idx].size())
+            throw std::invalid_argument("Activation function prodcued a different sized vector");
+        for (auto value : val)
+        {
+            if (!std::isfinite(value))
+                throw std::overflow_error("Activation function application resulted in overflow.");
+        }
+        tangent.activations.push_back(val);
+    }
 }
 
 #pragma endregion

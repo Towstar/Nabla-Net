@@ -63,6 +63,8 @@ if(BUILD_TESTING)
     add_nncpp_test(nncpp_test_cadamw tests/test_cadamw.cpp Optimizers)
     add_nncpp_test(nncpp_test_proximal tests/test_proximal.cpp Regularization)
     add_nncpp_test(nncpp_test_regularization tests/test_regularization.cpp Regularization)
+    add_nncpp_test(nncpp_test_autodiff tests/test_autodiff.cpp Autodiff)
+    add_nncpp_test(nncpp_test_objective_hvps tests/test_objective_hvps.cpp Autodiff)
 
     add_executable(nncpp_legacy_self_checks
         tests/legacy_main.cpp

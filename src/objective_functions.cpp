@@ -32,8 +32,7 @@ double binary_cross_entropy_from_logit(double logit, double target) {
         std::log1p(std::exp(-std::abs(logit))));
 }
 
-ObjectiveFunctions make_binary_cross_entropy_objective()
-{
+ObjectiveFunctions make_binary_cross_entropy_objective() {
     ObjectiveFunctions objective;
 
     objective.sample_loss = [](const Values& logit, const Values& target)
@@ -103,10 +102,62 @@ ObjectiveFunctions make_binary_cross_entropy_objective()
         }
 
         return gradient;
-        };
+    };
+    objective.sample_loss_hessian_vector_product =
+        [](const Values &logits, const Values &targets, const Values &logits_tangent) -> Values
+    {
+        if (logits.empty() || targets.empty() || logits_tangent.empty())
+        {
+            throw std::invalid_argument(
+                "Logits, targets, and logit tangents must contain at least one value.");
+        }
 
+        if (logits.size() != targets.size() ||
+            logits.size() != logits_tangent.size())
+        {
+            throw std::invalid_argument(
+                "Logits, targets, and logit tangents must have matching sizes.");
+        }
+
+        Values result(logits.size(), 0.0);
+        const double output_width =
+            static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i)
+        {
+            if (!std::isfinite(logits[i]) ||
+                !std::isfinite(logits_tangent[i]))
+            {
+                throw std::invalid_argument(
+                    "Logits and logit tangents must be finite.");
+            }
+
+            if (!std::isfinite(targets[i]) ||
+                targets[i] < 0.0 ||
+                targets[i] > 1.0)
+            {
+                throw std::invalid_argument(
+                    "Targets must be finite and in the range [0,1].");
+            }
+
+            const double probability = stable_sigmoid(logits[i]);
+
+            result[i] =
+                probability * (1.0 - probability) * logits_tangent[i] 
+                                / output_width;
+
+            if (!std::isfinite(result[i]))
+            {
+                throw std::runtime_error(
+                    "BCE loss-gradient JVP produced a non-finite value.");
+            }
+        }
+
+        return result;
+    };
     return objective;
 }
+
 #pragma endregion
 
 #pragma region Softmax Cross-Entropy Objective
@@ -275,6 +326,52 @@ ObjectiveFunctions make_softmax_cross_entropy_objective() {
         return gradient;
     };
 
+    objective.sample_loss_hessian_vector_product = [](
+        const Values& logits,
+        const Values& targets,
+        const Values& logits_tangent
+    ) -> Values {
+        static_cast<void>(cross_entropy_from_logits(logits, targets));
+
+        if (logits_tangent.size() != logits.size()) {
+            throw std::invalid_argument(
+                "Logits and logit tangents must have matching sizes."
+            );
+        }
+
+        const Values probabilities = stable_softmax(logits);
+        double weighted_tangent = 0.0;
+
+        for (std::size_t i = 0; i < logits_tangent.size(); ++i) {
+            if (!std::isfinite(logits_tangent[i])) {
+                throw std::invalid_argument(
+                    "Logit tangents must be finite."
+                );
+            }
+
+            weighted_tangent += probabilities[i] * logits_tangent[i];
+        }
+
+        if (!std::isfinite(weighted_tangent)) {
+            throw std::overflow_error(
+                "Softmax Hessian-vector product overflowed."
+            );
+        }
+
+        Values result(logits.size(), 0.0);
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            result[i] = probabilities[i] *
+                (logits_tangent[i] - weighted_tangent);
+
+            if (!std::isfinite(result[i])) {
+                throw std::overflow_error(
+                    "Softmax Hessian-vector product is not finite."
+                );
+            }
+        }
+
+        return result;
+    };
     return objective;
 }
 #pragma endregion
@@ -347,6 +444,41 @@ ObjectiveFunctions make_mean_squared_error_objective() {
         }
         return gradient;
 		};
+
+    objective.sample_loss_hessian_vector_product = [](
+        const Values& outputs,
+        const Values& targets,
+        const Values& output_tangent
+    ) -> Values {
+        static_cast<void>(mean_squared_error_from_logits(outputs, targets));
+
+        if (output_tangent.size() != outputs.size()) {
+            throw std::invalid_argument(
+                "MSE outputs and output tangents must have matching sizes."
+            );
+        }
+
+        Values result(outputs.size(), 0.0);
+        const double output_width = static_cast<double>(outputs.size());
+
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            if (!std::isfinite(output_tangent[i])) {
+                throw std::invalid_argument(
+                    "MSE output tangents must be finite."
+                );
+            }
+
+            result[i] = 2.0 * output_tangent[i] / output_width;
+
+            if (!std::isfinite(result[i])) {
+                throw std::overflow_error(
+                    "MSE Hessian-vector product is not finite."
+                );
+            }
+        }
+
+        return result;
+    };
 
     return objective;
 }
