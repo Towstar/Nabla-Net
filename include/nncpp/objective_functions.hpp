@@ -275,7 +275,7 @@ NetworkGradients objective_gradients(
 /// <summary>
 /// Computes the Hessian-vector product of the batch data objective plus all
 /// differentiable regularizers. Non-smooth or proximal regularizers, and
-/// regularizers lacking an add_gradient_jvp callback, are rejected.
+/// regularizers lacking an add_hessian_vector_product callback, are rejected.
 /// </summary>
 NetworkGradients objective_hessian_vector_product(
     const MLP& network,

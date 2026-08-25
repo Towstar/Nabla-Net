@@ -769,7 +769,7 @@ ForwardTangent forward_jvp(const MLP& network, const ForwardCache& cache, const 
             }
             pre_activation_tangent[output_idx] = value;
         }
-        tangent.pre_activations.push_back(prev_activation_tangent);
+        tangent.pre_activations.push_back(pre_activation_tangent);
         const ActivationFunction &activation = effective_activation(network, layer_idx);
         if (!activation.jvp)
             throw std::invalid_argument("Activation function must supply valid JVP callback");
@@ -783,6 +783,8 @@ ForwardTangent forward_jvp(const MLP& network, const ForwardCache& cache, const 
         }
         tangent.activations.push_back(val);
     }
+
+    return tangent;
 }
 
 #pragma endregion
@@ -1115,6 +1117,251 @@ NetworkGradients batch_gradients(const MLP& network, const Dataset& batch, const
     }
 
     return averaged;
+}
+
+NetworkGradients loss_hessian_vector_product(
+    const MLP& network,
+    const ForwardCache& cache,
+    const Values& target,
+    const NetworkTangent& parameter_tangent,
+    const ObjectiveFunctions& objective
+){
+    validate_backward_inputs(network, cache, target, objective);
+    validate_gradients_like(network, parameter_tangent);
+
+    if (!objective.sample_loss_hessian_vector_product)
+        throw std::invalid_argument("Parameter HVP requires obejctive loss HVP callback.");
+    const ForwardTangent tangent = forward_jvp(network, cache, parameter_tangent);
+    const std::size_t output_layer_idx = network.layers.size() - 1;
+    const std::size_t output_width = network.layers[output_layer_idx].output_size;
+    const bool objective_uses_pre_activations =
+        objective.input_domain == ObjectiveInputDomain::PreActivation;
+
+    const Values &objective_input = objective_uses_pre_activations ? cache.pre_activations.back() : cache.activations.back();
+    const Values &objective_input_tangent = objective_uses_pre_activations ? tangent.pre_activations.back() : tangent.activations.back();
+    Values output_loss_gradient = objective.sample_loss_gradient(objective_input, target);
+    Values output_loss_gradient_tangent = objective.sample_loss_hessian_vector_product(objective_input, target, objective_input_tangent);
+
+    const auto validate_output_vector =
+        [output_width](const Values& values, const char* description) {
+            if (values.size() != output_width) {
+                throw std::invalid_argument(
+                    std::string(description) +
+                    " size does not match network output width."
+                );
+            }
+
+            for (const double value : values) {
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        std::string(description) +
+                        " must contain only finite values."
+                    );
+                }
+            }
+        };
+
+    validate_output_vector(
+        output_loss_gradient,
+        "Objective output gradient"
+    );
+    validate_output_vector(
+        output_loss_gradient_tangent,
+        "Objective output-gradient directional derivative"
+    );
+
+    std::vector<Values> deltas;
+    std::vector<Values> delta_tangents;
+    deltas.reserve(network.layers.size());
+    delta_tangents.reserve(network.layers.size());
+
+    for (const DenseLayer& layer : network.layers){
+        deltas.emplace_back(layer.output_size, 0.0);
+        delta_tangents.emplace_back(layer.output_size, 0.0);
+    }
+
+    if (objective_uses_pre_activations){
+        deltas[output_layer_idx] = output_loss_gradient;
+        delta_tangents[output_layer_idx] = output_loss_gradient_tangent;
+    } else {
+        const ActivationFunction& output_activation =
+            effective_activation(network, output_layer_idx);
+
+        if (!output_activation.backward_jvp) {
+            throw std::invalid_argument(
+                "Activated-output HVP requires the output activation "
+                "to supply a backward JVP callback."
+            );
+        }
+
+        deltas[output_layer_idx] = output_activation.backward(
+            cache.pre_activations[output_layer_idx],
+            output_loss_gradient
+        );
+
+        delta_tangents[output_layer_idx] =
+            output_activation.backward_jvp(
+                cache.pre_activations[output_layer_idx],
+                tangent.pre_activations[output_layer_idx],
+                output_loss_gradient,
+                output_loss_gradient_tangent
+            );
+    }
+    validate_output_vector(
+        deltas[output_layer_idx],
+        "Output delta"
+    );
+    validate_output_vector(
+        delta_tangents[output_layer_idx],
+        "Output delta directional derivative"
+    );
+
+    for (std::size_t next_layer_idx = output_layer_idx; next_layer_idx > 0; --next_layer_idx) {
+        const std::size_t layer_idx = next_layer_idx - 1;
+        const DenseLayer& layer = network.layers[layer_idx];
+        const DenseLayer& next_layer = network.layers[next_layer_idx];
+        const LayerGradients& next_layer_tangent = parameter_tangent.layers[next_layer_idx];
+        Values transported_gradient(layer.output_size, 0.0);
+        Values transported_gradient_tangent(layer.output_size, 0.0);
+        for (std::size_t j = 0; j < layer.output_size; ++j) {
+            for (std::size_t r = 0; r < next_layer.output_size; ++r) {
+                const std::size_t weight_index =
+                    r * next_layer.input_size + j;
+
+                const double weight = next_layer.weights[weight_index];
+                const double weight_tangent =
+                    next_layer_tangent.weights[weight_index];
+
+                transported_gradient[j] +=
+                    weight * deltas[next_layer_idx][r];
+
+                transported_gradient_tangent[j] +=
+                    weight_tangent * deltas[next_layer_idx][r] +
+                    weight * delta_tangents[next_layer_idx][r];
+            }
+        }
+
+        const auto validate_layer_vector =
+            [&layer](const Values& values, const char* description) {
+                if (values.size() != layer.output_size) {
+                    throw std::invalid_argument(
+                        std::string(description) +
+                        " size does not match layer output width."
+                    );
+                }
+
+                for (const double value : values) {
+                    if (!std::isfinite(value)) {
+                        throw std::runtime_error(
+                            std::string(description) +
+                            " must contain only finite values."
+                        );
+                    }
+                }
+            };
+
+        validate_layer_vector(
+            transported_gradient,
+            "Transported gradient"
+        );
+        validate_layer_vector(
+            transported_gradient_tangent,
+            "Transported-gradient directional derivative"
+        );
+
+        const ActivationFunction& activation =
+            effective_activation(network, layer_idx);
+
+        if (!activation.backward_jvp) {
+            throw std::invalid_argument(
+                "Parameter HVP requires every hidden activation "
+                "to supply a backward JVP callback."
+            );
+        }
+
+        deltas[layer_idx] = activation.backward(
+            cache.pre_activations[layer_idx],
+            transported_gradient
+        );
+
+        delta_tangents[layer_idx] = activation.backward_jvp(
+            cache.pre_activations[layer_idx],
+            tangent.pre_activations[layer_idx],
+            transported_gradient,
+            transported_gradient_tangent
+        );
+
+        validate_layer_vector(
+            deltas[layer_idx],
+            "Hidden-layer delta"
+        );
+        validate_layer_vector(
+            delta_tangents[layer_idx],
+            "Hidden-layer delta directional derivative"
+        );
+    }
+    NetworkGradients hvp = make_zero_gradients_like(network);
+
+    for (std::size_t layer_idx = 0;
+        layer_idx < network.layers.size();
+        ++layer_idx) {
+        const DenseLayer& layer = network.layers[layer_idx];
+
+        const Values& previous_activation =
+            cache.activations[layer_idx];
+        const Values& previous_activation_tangent =
+            tangent.activations[layer_idx];
+
+        const Values& delta = deltas[layer_idx];
+        const Values& delta_tangent =
+            delta_tangents[layer_idx];
+
+        LayerGradients& hvp_layer = hvp.layers[layer_idx];
+
+        for (std::size_t j = 0; j < layer.output_size; ++j) {
+            hvp_layer.biases[j] = delta_tangent[j];
+
+            if (!std::isfinite(hvp_layer.biases[j])) {
+                throw std::overflow_error(
+                    "Parameter HVP produced a non-finite bias component."
+                );
+            }
+
+            for (std::size_t i = 0; i < layer.input_size; ++i) {
+                const std::size_t weight_index =
+                    j * layer.input_size + i;
+                const double weight_hvp =
+                    delta_tangent[j] * previous_activation[i] +
+                    delta[j] * previous_activation_tangent[i];
+
+                if (!std::isfinite(weight_hvp)) {
+                    throw std::overflow_error(
+                        "Parameter HVP produced a non-finite weight component."
+                    );
+                }
+
+                hvp_layer.weights[weight_index] = weight_hvp;
+            }
+        }
+    }
+
+    validate_gradients_like(network, hvp);
+    return hvp;
+}
+
+NetworkGradients loss_hessian_vector_product(
+    const MLP& network,
+    const ForwardCache& primal_cache,
+    const Values& target,
+    const NetworkTangent& parameter_tangent
+) {
+    return loss_hessian_vector_product(
+        network,
+        primal_cache,
+        target,
+        parameter_tangent,
+        make_binary_cross_entropy_objective()
+    );
 }
 
 #pragma endregion

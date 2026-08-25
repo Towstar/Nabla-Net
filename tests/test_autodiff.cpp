@@ -389,7 +389,7 @@ void test_activation_jvps()
     );
 }
 
-void test_objective_gradient_jvps()
+void test_objective_loss_hvps()
 {
     const Values logits{ 0.3, -0.7 };
     const Values target{ 0.8, 0.1 };
@@ -564,10 +564,10 @@ void test_regularized_objective_hvp()
         "L2 objective HVP must match the central difference of objective gradients");
 
     const RegularizationTerm l2 = make_l2_regularization(0.25, true);
-    require(static_cast<bool>(l2.add_gradient_jvp),
-        "L2 must expose a regularization-gradient JVP callback");
+    require(static_cast<bool>(l2.add_hessian_vector_product),
+        "L2 must expose a regularization HVP callback");
     NetworkGradients l2_actual = make_zero_gradients_like(network);
-    l2.add_gradient_jvp(network, tangent, l2_actual);
+    l2.add_hessian_vector_product(network, tangent, l2_actual);
     NetworkGradients l2_expected = make_zero_gradients_like(network);
     for (std::size_t layer_index = 0;
          layer_index < l2_expected.layers.size();
@@ -586,7 +586,7 @@ void test_regularized_objective_hvp()
         }
     }
     require_gradients_near(l2_actual, l2_expected, 1e-12,
-        "L2's unscaled regularization-gradient JVP must equal 2 times the tangent");
+        "L2's unscaled regularization HVP must equal 2 times the tangent");
 
     const ObjectiveConfig l1_subgradient_objective = make_objective_config(
         make_mean_squared_error_objective(),
@@ -615,6 +615,35 @@ void test_regularized_objective_hvp()
         },
         "objective HVPs must reject proximal L1"
     );
+}
+
+void test_l2_hvp_excludes_biases_by_default()
+{
+    const MLP network = make_autodiff_network(Activations::Sigmoid);
+    const NetworkTangent tangent = make_autodiff_tangent(network);
+    const RegularizationTerm l2 = make_l2_regularization(0.25, false);
+
+    require(static_cast<bool>(l2.add_hessian_vector_product),
+        "L2 must expose a regularization HVP callback");
+
+    NetworkGradients actual = make_zero_gradients_like(network);
+    l2.add_hessian_vector_product(network, tangent, actual);
+
+    NetworkGradients expected = make_zero_gradients_like(network);
+    for (std::size_t layer_index = 0;
+         layer_index < expected.layers.size();
+         ++layer_index) {
+        for (std::size_t index = 0;
+             index < expected.layers[layer_index].weights.size();
+             ++index) {
+            expected.layers[layer_index].weights[index] =
+                2.0 * tangent.layers[layer_index].weights[index];
+        }
+        // expected bias entries deliberately remain zero.
+    }
+
+    require_gradients_near(actual, expected, 1e-12,
+        "Default L2 HVP must leave bias entries unchanged");
 }
 
 void test_missing_jvp_callbacks_are_rejected()
@@ -662,10 +691,11 @@ int main()
     try {
         static_assert(std::is_same_v<NetworkTangent, NetworkGradients>);
         test_activation_jvps();
-        test_objective_gradient_jvps();
+        test_objective_loss_hvps();
         test_network_forward_jvp();
         test_sample_loss_hvps();
         test_regularized_objective_hvp();
+        test_l2_hvp_excludes_biases_by_default();
         test_missing_jvp_callbacks_are_rejected();
         std::cout << "[PASS] parameter-space JVP and HVP contracts\n";
         return 0;

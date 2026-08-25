@@ -836,6 +836,112 @@ NetworkGradients objective_gradients(
     return gradients;
 }
 
+NetworkGradients objective_hessian_vector_product(
+    const MLP& network,
+    const Dataset& batch,
+    const NetworkTangent& parameter_tangent,
+    const ObjectiveConfig& objective
+){
+    validate_objective_config(objective);
+    validate_network(network);
+    validate_gradients_like(network, parameter_tangent);
+    if (batch.empty())
+        throw std::invalid_argument("Objective HVP batch must not be empty.");
+    NetworkGradients averaged_hvp = make_zero_gradients_like(network);
+    for (const Sample& sample : batch){
+        const ForwardCache cache = forward_pass(network, sample.input);
+        const NetworkGradients sample_hvp = loss_hessian_vector_product(network, cache, sample.target, parameter_tangent, objective.data_objective);
+        for (std::size_t layer_idx = 0; layer_idx < averaged_hvp.layers.size(); layer_idx++){
+            LayerGradients& averaged_layer = averaged_hvp.layers[layer_idx];
+            const LayerGradients &sample_layer = sample_hvp.layers[layer_idx];
+            for (std::size_t i = 0; i < averaged_layer.weights.size(); i++){
+                const double updated = averaged_layer.weights[i] + sample_layer.weights[i];
+                if (!std::isfinite(updated))
+                    throw std::overflow_error("Objective HVP weight accumulation overflowed.");
+                averaged_layer.weights[i] = updated;
+            }
+            for (std::size_t j = 0; j < averaged_layer.biases.size(); j++){
+                const double updated = averaged_layer.biases[j] + sample_layer.biases[j];
+                if (!std::isfinite(updated))
+                    throw std::overflow_error("Objective HVP weight accumulation overflowed.");
+                averaged_layer.biases[j] = updated;
+            }
+        }
+    }
+    const double batch_size = static_cast<double>(batch.size());
+
+    for (LayerGradients& layer : averaged_hvp.layers) {
+        for (double& weight : layer.weights) {
+            weight /= batch_size;
+        }
+
+        for (double& bias : layer.biases) {
+            bias /= batch_size;
+        }
+    }
+
+    validate_gradients_like(network, averaged_hvp);
+
+    for (const RegularizationTerm& term : objective.regularizers) {
+        if (!term.smooth) {
+            throw std::invalid_argument(
+                "Objective HVP does not support non-smooth regularizers."
+            );
+        }
+
+        if (term.proximal) {
+            throw std::invalid_argument(
+                "Objective HVP does not support proximal regularizers."
+            );
+        }
+
+        if (!term.add_hessian_vector_product) {
+            throw std::invalid_argument(
+                "Objective HVP requires each regularizer to supply "
+                "an add_hessian_vector_product callback."
+            );
+        }
+
+        NetworkGradients regularizer_hvp =
+            make_zero_gradients_like(network);
+
+        term.add_hessian_vector_product(
+            network,
+            parameter_tangent,
+            regularizer_hvp
+        );
+
+        validate_gradients_like(network, regularizer_hvp);
+
+        NetworkGradients candidate = averaged_hvp;
+
+        for (std::size_t layer_idx = 0; layer_idx < candidate.layers.size(); layer_idx++) {
+            LayerGradients &candidate_layer = candidate.layers[layer_idx];
+            const LayerGradients &regularizer_layer = regularizer_hvp.layers[layer_idx];
+            for (std::size_t i = 0; i < candidate.layers[layer_idx].weights.size(); i++) {
+                const double contribution = term.coefficient * regularizer_layer.weights[i];
+                const double updated = candidate_layer.weights[i] + contribution;
+                if (!std::isfinite(updated))
+                    throw std::overflow_error("Regularization HVP weight contribution overflowed.");
+
+                candidate_layer.weights[i] = updated;
+            }
+            for (std::size_t j = 0; j < candidate_layer.biases.size(); j++) {
+                const double contribution = term.coefficient * regularizer_layer.biases[j];
+                const double updated = candidate_layer.biases[j] + contribution;
+                if (!std::isfinite(updated))
+                    throw std::overflow_error("Regularization HVP bias contribution overflowed.");
+                candidate_layer.biases[j] = updated;
+            }
+        }
+
+        validate_gradients_like(network, candidate);
+        averaged_hvp = std::move(candidate);
+    }
+    validate_gradients_like(network, averaged_hvp);
+    return averaged_hvp;
+}
+
 #pragma endregion
 
 #pragma region L2 Regularization
@@ -901,6 +1007,39 @@ RegularizationTerm make_l2_regularization(
             if (include_biases) {
                 for (std::size_t j = 0; j < layer.biases.size(); ++j) {
                     grad_layer.biases[j] += 2.0 * layer.biases[j];
+                }
+            }
+        }
+        validate_gradients_like(network, gradients);
+    };
+    term.add_hessian_vector_product = [include_biases](const MLP &network, const NetworkTangent &parameter_tangent, NetworkGradients &gradients)
+    {
+        validate_network(network);
+        validate_gradients_like(network, parameter_tangent);
+        validate_gradients_like(network, gradients);
+
+        for (std::size_t layer_idx = 0; layer_idx < network.layers.size(); layer_idx++) {
+            const LayerGradients &layer_tangent = parameter_tangent.layers[layer_idx];
+            LayerGradients &gradient_layer = gradients.layers[layer_idx];
+
+            for (std::size_t i = 0; i < gradient_layer.weights.size(); i++) {
+                const double contribution = 2.0 * layer_tangent.weights[i];
+                const double updated = gradient_layer.weights[i] + contribution;
+
+                if (!std::isfinite(updated))
+                    throw std::overflow_error("L2 HVP produced a non finite weight contribution.");
+
+                gradient_layer.weights[i] = updated;
+            }
+            if (include_biases) {
+                for (std::size_t i = 0; i < gradient_layer.biases.size(); i++) {
+                    const double contribution = 2.0 * layer_tangent.biases[i];
+                    const double updated = gradient_layer.biases[i] + contribution;
+
+                    if (!std::isfinite(updated))
+                        throw std::overflow_error("L2 HVP produced a non finite bias contribution.");
+
+                    gradient_layer.biases[i] = updated;
                 }
             }
         }

@@ -357,7 +357,7 @@ struct TrainingStepResult {
 /// <para><c>name</c> (<c>std::string</c>).</para>
 /// <para><c>value</c> (<c>std::function&lt;double(const MLP&amp;)&gt;</c>).</para>
 /// <para><c>add_gradient</c> (<c>std::function&lt;void(const MLP&amp;, NetworkGradients&amp;)&gt;</c>).</para>
-/// <para><c>add_gradient_jvp</c> (<c>std::function&lt;void(const MLP&amp;, const NetworkTangent&amp;, NetworkGradients&amp;)&gt;</c>, optional).</para>
+/// <para><c>add_hessian_vector_product</c> (<c>std::function&lt;void(const MLP&amp;, const NetworkTangent&amp;, NetworkGradients&amp;)&gt;</c>, optional).</para>
 /// <para><c>proximal</c> (<c>bool</c>).</para>
 /// <para><c>proximal_update</c> (<c>std::function&lt;void(MLP&amp;, double effective_step_size)&gt;</c>).</para>
 /// <para><c>smooth</c> (<c>bool</c>).</para>
@@ -373,14 +373,10 @@ struct RegularizationTerm {
     // proximal elastic net, may use this callback for its smooth component
     // and proximal_update for its non-smooth component.
     std::function<void(const MLP&, NetworkGradients&)> add_gradient;
-    // Adds the unscaled directional derivative of add_gradient. It is used
+    // Adds the unscaled regularization Hessian-vector product. It is used
     // only by complete-objective HVP APIs; the aggregation layer applies
     // coefficient exactly once, just as it does for add_gradient.
-    std::function<void(
-        const MLP&,
-        const NetworkTangent&,
-        NetworkGradients&
-    )> add_gradient_jvp;
+    std::function<void(const MLP&, const NetworkTangent&, NetworkGradients&)> add_hessian_vector_product;
     // The trainer invokes this callback after a base optimizer step, passing
     // the effective step size. It may coexist with add_gradient when the term
     // combines a smooth and a non-smooth penalty.
