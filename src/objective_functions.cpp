@@ -1,4 +1,5 @@
 #include "detail/objective_functions.hpp"
+#include "wolfe_analysis.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -485,15 +486,239 @@ ObjectiveFunctions make_mean_squared_error_objective() {
 #pragma endregion
 
 #pragma region Exponential Objective
+double exponential_objective(const Values& logits, const Values& targets) {
+    if (logits.empty() || targets.empty())
+        throw std::invalid_argument("Logits and targets must contain at least one value.");
+    if (logits.size() != targets.size())
+        throw std::invalid_argument("Logits and targets must have matching sizes.");
+
+    double sum = 0.0;
+
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        const double logit_i = logits[i];
+        const double target_i = targets[i];
+
+        if (!std::isfinite(logit_i))
+            throw std::invalid_argument("Logits must be finite.");
+        if (!std::isfinite(target_i))
+            throw std::invalid_argument("Targets must be finite.");
+        if (target_i != -1.0 && target_i != 1.0)
+            throw std::invalid_argument("Targets must be binary, i.e. {-1,1}.");
+
+        const double loss_i = std::exp(-target_i * logit_i);
+        if (!std::isfinite(loss_i))
+            throw std::overflow_error("Exponential loss term overflowed.");
+
+        sum += loss_i;
+        if (!std::isfinite(sum))
+            throw std::overflow_error("Exponential loss sum overflowed.");
+    }
+
+    return sum / static_cast<double>(logits.size());
+}
+
 ObjectiveFunctions make_exponential_objective() {
-    throw std::logic_error("Not Implemented");
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logits, const Values& targets) {
+        return exponential_objective(logits, targets);
+    };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
+        if (logits.empty() || targets.empty())
+            throw std::invalid_argument("Logits and targets must contain at least one value.");
+        if (logits.size() != targets.size())
+            throw std::invalid_argument("Logits and targets must have matching sizes.");
+
+        Values gradient(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            const double logit_i = logits[i];
+            const double target_i = targets[i];
+
+            if (!std::isfinite(logit_i))
+                throw std::invalid_argument("Logits must be finite.");
+            if (!std::isfinite(target_i))
+                throw std::invalid_argument("Targets must be finite.");
+            if (target_i != -1.0 && target_i != 1.0)
+                throw std::invalid_argument("Targets must be binary, i.e. {-1,1}.");
+
+            const double loss_i = std::exp(-target_i * logit_i);
+            if (!std::isfinite(loss_i))
+                throw std::overflow_error("Exponential loss term overflowed.");
+
+            gradient[i] = -target_i * loss_i / output_width;
+            if (!std::isfinite(gradient[i]))
+                throw std::runtime_error("Exponential loss gradient produced a non-finite value.");
+        }
+
+        return gradient;
+    };
+
+    objective.sample_loss_hessian_vector_product = [](
+        const Values& logits,
+        const Values& targets,
+        const Values& logits_tangent
+    ) -> Values {
+        if (logits.empty() || targets.empty() || logits_tangent.empty())
+            throw std::invalid_argument("Logits, targets, and logit tangents must contain at least one value.");
+        if (logits.size() != targets.size() ||
+            logits.size() != logits_tangent.size())
+            throw std::invalid_argument("Logits, targets, and logit tangents must have matching sizes.");
+
+        Values result(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            const double logit_i = logits[i];
+            const double target_i = targets[i];
+            const double tangent_i = logits_tangent[i];
+
+            if (!std::isfinite(logit_i) || !std::isfinite(tangent_i))
+                throw std::invalid_argument("Logits and logit tangents must be finite.");
+            if (!std::isfinite(target_i))
+                throw std::invalid_argument("Targets must be finite.");
+            if (target_i != -1.0 && target_i != 1.0)
+                throw std::invalid_argument("Targets must be binary, i.e. {-1,1}.");
+
+            const double loss_i = std::exp(-target_i * logit_i);
+            if (!std::isfinite(loss_i))
+                throw std::overflow_error("Exponential loss term overflowed.");
+
+            // d^2/dz_i^2 exp(-y_i z_i) = y_i^2 exp(-y_i z_i)
+            // and y_i^2 = 1 for y_i in {-1,+1}.
+            result[i] = loss_i * tangent_i / output_width;
+
+            if (!std::isfinite(result[i]))
+                throw std::overflow_error("Exponential Hessian-vector product is not finite.");
+        }
+
+        return result;
+    };
+
+    return objective;
 }
 #pragma endregion
 
 #pragma region Hinge Objective
-ObjectiveFunctions make_hinge_objective() {
-    throw std::logic_error("Not Implemented");
+
+double hinge_objective(const Values& logits, const Values& targets) {
+    if (logits.empty() || targets.empty())
+        throw std::invalid_argument("Logits and targets must contain at least one value.");
+    if (logits.size() != targets.size())
+        throw std::invalid_argument("Logits and targets must have matching sizes.");
+
+    double sum = 0.0;
+
+    for (std::size_t i = 0; i < logits.size(); ++i) {
+        const double logit_i = logits[i];
+        const double target_i = targets[i];
+
+        if (!std::isfinite(logit_i))
+            throw std::invalid_argument("Hinge-loss logits must be finite.");
+        if (!std::isfinite(target_i))
+            throw std::invalid_argument("Hinge-loss targets must be finite.");
+        if (target_i != -1.0 && target_i != 1.0)
+            throw std::invalid_argument("Hinge-loss targets must be binary, i.e. {-1,1}.");
+
+        const double margin = target_i * logit_i;
+        if (!std::isfinite(margin))
+            throw std::overflow_error("Hinge-loss margin is not finite.");
+
+        const double loss_i = std::max(0.0, 1.0 - margin);
+        if (!std::isfinite(loss_i))
+            throw std::overflow_error("Hinge-loss term is not finite.");
+
+        sum += loss_i;
+        if (!std::isfinite(sum))
+            throw std::overflow_error("Hinge-loss sum overflowed.");
+    }
+
+    return sum / static_cast<double>(logits.size());
 }
+
+ObjectiveFunctions make_hinge_objective() {
+    ObjectiveFunctions objective;
+
+    objective.sample_loss = [](const Values& logits, const Values& targets) {
+        return hinge_objective(logits, targets);
+    };
+
+    objective.sample_loss_gradient = [](const Values& logits, const Values& targets) -> Values {
+        if (logits.empty() || targets.empty())
+            throw std::invalid_argument("Logits and targets must contain at least one value.");
+        if (logits.size() != targets.size())
+            throw std::invalid_argument("Logits and targets must have matching sizes.");
+
+        Values gradient(logits.size(), 0.0);
+        const double output_width = static_cast<double>(logits.size());
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            const double logit_i = logits[i];
+            const double target_i = targets[i];
+
+            if (!std::isfinite(logit_i))
+                throw std::invalid_argument("Hinge-loss logits must be finite.");
+            if (!std::isfinite(target_i))
+                throw std::invalid_argument("Hinge-loss targets must be finite.");
+            if (target_i != -1.0 && target_i != 1.0)
+                throw std::invalid_argument("Hinge-loss targets must be binary, i.e. {-1,1}.");
+
+            const double margin = target_i * logit_i;
+            if (!std::isfinite(margin))
+                throw std::overflow_error("Hinge-loss margin is not finite.");
+
+            gradient[i] = margin < 1.0 ? -target_i / output_width : 0.0;
+
+            if (!std::isfinite(gradient[i]))
+                throw std::runtime_error("Hinge-loss subgradient produced a non-finite value.");
+        }
+
+        return gradient;
+    };
+
+    objective.sample_loss_hessian_vector_product = [](
+        const Values& logits,
+        const Values& targets,
+        const Values& logits_tangent
+    ) -> Values {
+        if (logits.empty() || targets.empty() || logits_tangent.empty())
+            throw std::invalid_argument("Logits, targets, and logit tangents must contain at least one value.");
+        if (logits.size() != targets.size() || logits.size() != logits_tangent.size())
+            throw std::invalid_argument("Logits, targets, and logit tangents must have matching sizes.");
+
+        Values result(logits.size(), 0.0);
+
+        for (std::size_t i = 0; i < logits.size(); ++i) {
+            const double logit_i = logits[i];
+            const double target_i = targets[i];
+            const double tangent_i = logits_tangent[i];
+
+            if (!std::isfinite(logit_i))
+                throw std::invalid_argument("Hinge-loss logits must be finite.");
+            if (!std::isfinite(target_i))
+                throw std::invalid_argument("Hinge-loss targets must be finite.");
+            if (target_i != -1.0 && target_i != 1.0)
+                throw std::invalid_argument("Hinge-loss targets must be binary, i.e. {-1,1}.");
+            if (!std::isfinite(tangent_i))
+                throw std::invalid_argument("Hinge-loss logit tangents must be finite.");
+
+            const double margin = target_i * logit_i;
+            if (!std::isfinite(margin))
+                throw std::overflow_error("Hinge-loss margin is not finite.");
+            if (margin == 1.0)
+                throw std::domain_error("Hinge-loss Hessian is undefined when target * logit equals 1.");
+
+            result[i] = 0.0;
+        }
+
+        return result;
+    };
+
+    return objective;
+}
+
 #pragma endregion
 
 #pragma region Common Evaluation Objective Infrastructure
