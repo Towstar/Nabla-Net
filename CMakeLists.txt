@@ -40,6 +40,9 @@ endif()
 if(NNCPP_BUILD_EXAMPLES)
     add_executable(nncpp_example examples/nncpp_library_example.cpp)
     target_link_libraries(nncpp_example PRIVATE nncpp::nncpp)
+
+    add_executable(nncpp_cs2_hvp_example examples/cs2_hvp_example.cpp)
+    target_link_libraries(nncpp_cs2_hvp_example PRIVATE nncpp::nncpp)
 endif()
 
 if(BUILD_TESTING)
@@ -65,6 +68,8 @@ if(BUILD_TESTING)
     add_nncpp_test(nncpp_test_regularization tests/test_regularization.cpp Regularization)
     add_nncpp_test(nncpp_test_autodiff tests/test_autodiff.cpp Autodiff)
     add_nncpp_test(nncpp_test_objective_hvps tests/test_objective_hvps.cpp Autodiff)
+    add_nncpp_test(nncpp_test_newton_cg tests/test_newton_cg.cpp Optimizers)
+    add_nncpp_test(nncpp_test_lbfgs tests/test_lbfgs.cpp Optimizers)
 
     add_executable(nncpp_legacy_self_checks
         tests/legacy_main.cpp

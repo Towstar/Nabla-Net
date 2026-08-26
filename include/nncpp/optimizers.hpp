@@ -200,18 +200,29 @@ struct CAdamWOptions {
     double cautious_epsilon{ 1.0 };
 };
 
-/// <summary>
-/// Direct data members of <c>LBFGSOptions</c>:
-/// <para><c>learning_rate_schedule</c> (<c>LearningRateSchedule</c>).</para>
-/// <para><c>decay</c> (<c>double</c>).</para>
-/// <para><c>epsilon</c> (<c>double</c>).</para>
-/// </summary>
+/// Selects how L-BFGS handles an Armijo-only line-search result.
+enum class LBFGSLineSearchPolicy {
+    StrongWolfeRequired,
+    ArmijoFallbackWithoutHistory
+};
+
+/// Options for the exact-curvature damped Newton--CG reference optimizer.
+/// It solves (H + damping I)p = -gradient through Hessian-vector products.
+struct NewtonCGOptions {
+    double damping{ 1e-3 };
+    std::size_t maximum_cg_iterations{ 50 };
+    double absolute_residual_tolerance{ 1e-10 };
+    double relative_residual_tolerance{ 1e-4 };
+    double negative_curvature_tolerance{ 1e-12 };
+    WolfeParameters line_search{};
+};
+
+/// Options for deterministic full-batch L-BFGS.
 struct LBFGSOptions {
-    LearningRateSchedule learning_rate_schedule{
-        [](std::size_t) {return 0.01; }
-    };
-    double decay = 0.99;
-    double epsilon = 1e-8;
+    std::size_t history_size{ 10 };
+    double curvature_tolerance{ 1e-10 };
+    WolfeParameters line_search{};
+    LBFGSLineSearchPolicy line_search_policy{LBFGSLineSearchPolicy::StrongWolfeRequired};
 };
 
 /// <summary>
@@ -252,6 +263,11 @@ OptimizerSpec make_adamw(AdamWOptions options = {});
 OptimizerSpec make_cadamw(CAdamWOptions options = {});
 
 /// <summary>
+/// Creates a damped Newton--CG optimizer specification.
+/// </summary>
+OptimizerSpec make_newton_cg(NewtonCGOptions options = {});
+
+/// <summary>
 /// Creates an L-BFGS optimizer specification.
 /// </summary>
 OptimizerSpec make_lbfgs(LBFGSOptions options = {});
@@ -264,6 +280,7 @@ namespace Optimizers {
     extern const OptimizerSpec Adam;
     extern const OptimizerSpec AdamW;
     extern const OptimizerSpec CAdamW;
+    extern const OptimizerSpec NewtonCG;
     extern const OptimizerSpec LBFGS;
 }
 

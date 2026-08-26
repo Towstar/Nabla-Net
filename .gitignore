@@ -395,3 +395,4 @@ NNCPPP-Practice/local-notes/
 *.synctex.gz
 *.toc
 *.out
+examples/cs2_hvp_example.cpp

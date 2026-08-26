@@ -109,6 +109,20 @@ WolfeEvaluation evaluate_wolfe_candidate(
 );
 
 /// <summary>
+/// Evaluates a candidate against the complete data-plus-regularization objective.
+/// </summary>
+WolfeEvaluation evaluate_wolfe_candidate(
+    const MLP& current_network,
+    const Dataset& batch,
+    double current_loss,
+    const NetworkGradients& current_gradient,
+    const NetworkDirection& direction,
+    double step_size,
+    const WolfeParameters& parameters,
+    const ObjectiveConfig& objective
+);
+
+/// <summary>
 /// Searches for a valid step size by backtracking under Wolfe conditions.
 /// </summary>
 LineSearchResult backtracking_wolfe_stepsize(
@@ -120,6 +134,19 @@ LineSearchResult backtracking_wolfe_stepsize(
     const WolfeParameters& parameters,
     const ObjectiveFunctions& objective =
         make_binary_cross_entropy_objective()
+);
+
+/// <summary>
+/// Searches using the complete data-plus-regularization objective.
+/// </summary>
+LineSearchResult backtracking_wolfe_stepsize(
+    const MLP& current_network,
+    const Dataset& batch,
+    double current_loss,
+    const NetworkGradients& current_gradient,
+    const NetworkDirection& direction,
+    const WolfeParameters& parameters,
+    const ObjectiveConfig& objective
 );
 
 /// <summary>

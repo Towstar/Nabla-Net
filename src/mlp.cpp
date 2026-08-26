@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <numeric>
 #include <algorithm>
-#include <format>
 #include <stdexcept>
 #include <utility>
 

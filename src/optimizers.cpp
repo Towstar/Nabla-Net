@@ -1,4 +1,5 @@
 #include "../include/nncpp/optimizers.hpp"
+#include "../include/nncpp/wolfe_analysis.hpp"
 
 #include <cmath>
 #include <cctype>
@@ -919,12 +920,406 @@ namespace
     };
 
 
+    void add_scaled(
+        NetworkGradients& destination,
+        const NetworkGradients& source,
+        const double scale
+    ) {
+        if (!std::isfinite(scale)) {
+            throw std::invalid_argument("Gradient scale must be finite.");
+        }
+        if (destination.layers.size() != source.layers.size()) {
+            throw std::invalid_argument("Gradient layer counts must match.");
+        }
+        for (std::size_t layer_index = 0;
+             layer_index < destination.layers.size();
+             ++layer_index) {
+            LayerGradients& destination_layer = destination.layers[layer_index];
+            const LayerGradients& source_layer = source.layers[layer_index];
+            if (destination_layer.weights.size() != source_layer.weights.size() ||
+                destination_layer.biases.size() != source_layer.biases.size()) {
+                throw std::invalid_argument("Gradient shapes must match.");
+            }
+            for (std::size_t index = 0;
+                 index < destination_layer.weights.size();
+                 ++index) {
+                destination_layer.weights[index] += scale * source_layer.weights[index];
+            }
+            for (std::size_t index = 0;
+                 index < destination_layer.biases.size();
+                 ++index) {
+                destination_layer.biases[index] += scale * source_layer.biases[index];
+            }
+        }
+    }
+
+    NetworkGradients scaled_gradient(
+        const NetworkGradients& source,
+        const double scale
+    ) {
+        NetworkGradients result = source;
+        for (LayerGradients& layer : result.layers) {
+            for (double& value : layer.weights) {
+                value *= scale;
+            }
+            for (double& value : layer.biases) {
+                value *= scale;
+            }
+        }
+        return result;
+    }
+
+    NetworkGradients gradient_difference(
+        const NetworkGradients& left,
+        const NetworkGradients& right
+    ) {
+        NetworkGradients result = left;
+        add_scaled(result, right, -1.0);
+        return result;
+    }
+
+    void validate_smooth_objective(const ObjectiveConfig& objective) {
+        validate_objective_config(objective);
+        for (const RegularizationTerm& term : objective.regularizers) {
+            if (!term.smooth || term.proximal) {
+                throw std::invalid_argument(
+                    "Curvature optimizers require smooth, non-proximal regularizers."
+                );
+            }
+        }
+    }
+
+    void validate_newton_cg_objective(const ObjectiveConfig& objective) {
+        validate_smooth_objective(objective);
+        if (!objective.data_objective.sample_loss_hessian_vector_product) {
+            throw std::invalid_argument(
+                "Newton-CG requires an objective loss HVP callback."
+            );
+        }
+        for (const RegularizationTerm& term : objective.regularizers) {
+            if (!term.add_hessian_vector_product) {
+                throw std::invalid_argument(
+                    "Newton-CG requires every regularizer to provide an HVP callback."
+                );
+            }
+        }
+    }
+
+    void validate_curvature_step_context(const OptimizerContext& context, const char* optimizer_name) {
+        validate_network(context.network);
+        validate_gradients_like(context.network, context.current_gradient);
+        if (context.batch.empty()) {
+            throw std::invalid_argument(
+                std::string(optimizer_name) + " batch cannot be empty."
+            );
+        }
+        if (!std::isfinite(context.current_loss)) {
+            throw std::invalid_argument("Current loss must be finite.");
+        }
+    }
+
+    class NewtonCGOptimizer final : public Optimizer {
+    public:
+        explicit NewtonCGOptimizer(NewtonCGOptions options) {
+            if (!std::isfinite(options.damping) || options.damping <= 0.0) {
+                throw std::invalid_argument("Newton-CG damping must be positive and finite.");
+            }
+            if (options.maximum_cg_iterations == 0) {
+                throw std::invalid_argument("Newton-CG maximum_cg_iterations must be positive.");
+            }
+            if (!std::isfinite(options.absolute_residual_tolerance) ||
+                options.absolute_residual_tolerance < 0.0) {
+                throw std::invalid_argument(
+                    "Newton-CG absolute_residual_tolerance must be finite and non-negative."
+                );
+            }
+            if (!std::isfinite(options.relative_residual_tolerance) ||
+                options.relative_residual_tolerance < 0.0) {
+                throw std::invalid_argument(
+                    "Newton-CG relative_residual_tolerance must be finite and non-negative."
+                );
+            }
+            if (!std::isfinite(options.negative_curvature_tolerance) ||
+                options.negative_curvature_tolerance < 0.0) {
+                throw std::invalid_argument(
+                    "Newton-CG negative_curvature_tolerance must be finite and non-negative."
+                );
+            }
+            validate_wolfe_parameters(options.line_search);
+
+            options_.damping = options.damping;
+            options_.maximum_cg_iterations = options.maximum_cg_iterations;
+            options_.absolute_residual_tolerance = options.absolute_residual_tolerance;
+            options_.relative_residual_tolerance = options.relative_residual_tolerance;
+            options_.negative_curvature_tolerance = options.negative_curvature_tolerance;
+            options_.line_search = options.line_search;
+        }
+
+        const char* name() const noexcept override {
+            return "NewtonCG";
+        }
+
+        void reset(const MLP& network) override {
+            validate_network(network);
+        }
+
+        TrainingStepResult step(OptimizerContext& context) override {
+            validate_curvature_step_context(context, name());
+            validate_newton_cg_objective(context.objective);
+
+            return _step(context);
+        }
+
+    private:
+        NewtonCGOptions options_;
+
+        TrainingStepResult _step(OptimizerContext& context) {
+            TrainingStepResult result{};
+            result.previous_loss = context.current_loss;
+            result.new_loss = context.current_loss;
+            result.gradient_norm = gradient_l2_norm(context.current_gradient);
+            if (result.gradient_norm == 0.0) {
+                return result;
+            }
+
+            NetworkGradients solution = make_zero_gradients_like(context.network);
+            NetworkGradients residual =
+                make_negative_gradient_direction(context.current_gradient);
+            NetworkGradients direction = residual;
+            double residual_square = network_vector_dot(residual, residual);
+            const double initial_residual_norm = std::sqrt(residual_square);
+            const double target_residual_norm = std::max(
+                options_.absolute_residual_tolerance,
+                options_.relative_residual_tolerance * initial_residual_norm
+            );
+
+            for (std::size_t iteration = 0; iteration < options_.maximum_cg_iterations; ++iteration) {
+                NetworkGradients system_direction = objective_hessian_vector_product(
+                    context.network,
+                    context.batch,
+                    direction,
+                    context.objective
+                );
+                add_scaled(system_direction, direction, options_.damping);
+
+                const double direction_square = network_vector_dot(direction, direction);
+                const double curvature =
+                    network_vector_dot(direction, system_direction);
+                if (curvature <= options_.negative_curvature_tolerance * direction_square) {
+                    if (iteration == 0) {
+                        solution = make_negative_gradient_direction(context.current_gradient);
+                    }
+                    break;
+                }
+
+                const double alpha = residual_square / curvature;
+                add_scaled(solution, direction, alpha);
+                add_scaled(residual, system_direction, -alpha);
+                const double next_residual_square = network_vector_dot(residual, residual);
+                if (std::sqrt(next_residual_square) <= target_residual_norm)
+                    break;
+
+                const double beta = next_residual_square / residual_square;
+                NetworkGradients next_direction = residual;
+                add_scaled(next_direction, direction, beta);
+                direction = std::move(next_direction);
+                residual_square = next_residual_square;
+            }
+
+            if (!is_downhill_direction(context.current_gradient, solution)) {
+                solution = make_negative_gradient_direction(context.current_gradient);
+            }
+
+            result.line_search = backtracking_wolfe_stepsize(
+                context.network,
+                context.batch,
+                context.current_loss,
+                context.current_gradient,
+                solution,
+                options_.line_search,
+                context.objective
+            );
+            if (result.line_search.status == LineSearchStatus::Failed) {
+                return result;
+            }
+
+            context.network = result.line_search.selected_network;
+            result.updated = true;
+            result.new_loss = result.line_search.selected_loss;
+            result.effective_step_size = result.line_search.step_size;
+            return result;
+        }
+    };
+
     class LBFGSOptimizer final : public Optimizer
     {
     public:
-        const char* name() const noexcept override;
-        void reset(const MLP& network) override;
-        TrainingStepResult step(OptimizerContext& context) override;
+        explicit LBFGSOptimizer(LBFGSOptions options) {
+            if (options.history_size == 0) {
+                throw std::invalid_argument("L-BFGS history_size must be positive.");
+            }
+            if (!std::isfinite(options.curvature_tolerance) ||
+                options.curvature_tolerance <= 0.0) {
+                throw std::invalid_argument(
+                    "L-BFGS curvature_tolerance must be positive and finite."
+                );
+            }
+            switch (options.line_search_policy) {
+            case LBFGSLineSearchPolicy::StrongWolfeRequired:
+            case LBFGSLineSearchPolicy::ArmijoFallbackWithoutHistory:
+                break;
+            default:
+                throw std::invalid_argument("L-BFGS line-search policy is invalid.");
+            }
+            validate_wolfe_parameters(options.line_search);
+
+            options_.history_size = options.history_size;
+            options_.curvature_tolerance = options.curvature_tolerance;
+            options_.line_search = options.line_search;
+            options_.line_search_policy = options.line_search_policy;
+        }
+
+        const char* name() const noexcept override
+        {
+            return "LBFGS";
+        }
+
+        void reset(const MLP& network) override
+        {
+            validate_network(network);
+            steps_.clear();
+            gradient_changes_.clear();
+            inverse_curvatures_.clear();
+        }
+
+        TrainingStepResult step(OptimizerContext& context) override
+        {
+            validate_curvature_step_context(context, name());
+            validate_smooth_objective(context.objective);
+
+            TrainingStepResult result{};
+            result.previous_loss = context.current_loss;
+            result.new_loss = context.current_loss;
+            result.gradient_norm = gradient_l2_norm(context.current_gradient);
+            if (result.gradient_norm == 0.0) {
+                return result;
+            }
+
+            NetworkGradients direction = make_lbfgs_direction(
+                context.current_gradient
+            );
+            if (!is_downhill_direction(context.current_gradient, direction)) {
+                reset(context.network);
+                direction = make_negative_gradient_direction(context.current_gradient);
+            }
+
+            result.line_search = backtracking_wolfe_stepsize(
+                context.network,
+                context.batch,
+                context.current_loss,
+                context.current_gradient,
+                direction,
+                options_.line_search,
+                context.objective
+            );
+            const bool strong_wolfe =
+                result.line_search.status == LineSearchStatus::StrongWolfeSatisfied;
+            const bool armijo_fallback =
+                result.line_search.status == LineSearchStatus::SufficientDecreaseFallback;
+            if (!strong_wolfe &&
+                !(armijo_fallback &&
+                  options_.line_search_policy ==
+                      LBFGSLineSearchPolicy::ArmijoFallbackWithoutHistory)) {
+                result.line_search.status = LineSearchStatus::Failed;
+                return result;
+            }
+
+            if (strong_wolfe) {
+                const NetworkGradients step = scaled_gradient(
+                    direction, result.line_search.step_size
+                );
+                const NetworkGradients gradient_change = gradient_difference(
+                    result.line_search.selected_gradient,
+                    context.current_gradient
+                );
+                append_curvature_pair(step, gradient_change);
+            }
+
+            context.network = result.line_search.selected_network;
+            result.updated = true;
+            result.new_loss = result.line_search.selected_loss;
+            result.effective_step_size = result.line_search.step_size;
+            return result;
+        }
+
+    private:
+        NetworkGradients make_lbfgs_direction(
+            const NetworkGradients& gradient
+        ) const
+        {
+            NetworkGradients q = gradient;
+            std::vector<double> alphas(steps_.size(), 0.0);
+            for (std::size_t reverse_index = steps_.size();
+                 reverse_index > 0;
+                 --reverse_index) {
+                const std::size_t index = reverse_index - 1;
+                alphas[index] = inverse_curvatures_[index] * network_vector_dot(
+                    steps_[index], q
+                );
+                add_scaled(q, gradient_changes_[index], -alphas[index]);
+            }
+
+            double initial_scale = 1.0;
+            if (!steps_.empty()) {
+                const NetworkGradients& last_step = steps_.back();
+                const NetworkGradients& last_change = gradient_changes_.back();
+                const double change_square = network_vector_dot(
+                    last_change, last_change
+                );
+                const double curvature = network_vector_dot(last_step, last_change);
+                if (change_square > 0.0 && curvature > 0.0) {
+                    initial_scale = curvature / change_square;
+                }
+            }
+            NetworkGradients r = scaled_gradient(q, initial_scale);
+            for (std::size_t index = 0; index < steps_.size(); ++index) {
+                const double beta = inverse_curvatures_[index] * network_vector_dot(
+                    gradient_changes_[index], r
+                );
+                add_scaled(r, steps_[index], alphas[index] - beta);
+            }
+            return make_negative_gradient_direction(r);
+        }
+
+        void append_curvature_pair(
+            const NetworkGradients& step,
+            const NetworkGradients& gradient_change
+        )
+        {
+            const double step_square = network_vector_dot(step, step);
+            const double change_square = network_vector_dot(
+                gradient_change, gradient_change
+            );
+            const double curvature = network_vector_dot(step, gradient_change);
+            if (step_square == 0.0 || change_square == 0.0 ||
+                curvature <= options_.curvature_tolerance *
+                    std::sqrt(step_square * change_square)) {
+                return;
+            }
+            if (steps_.size() == options_.history_size) {
+                steps_.erase(steps_.begin());
+                gradient_changes_.erase(gradient_changes_.begin());
+                inverse_curvatures_.erase(inverse_curvatures_.begin());
+            }
+            steps_.push_back(step);
+            gradient_changes_.push_back(gradient_change);
+            inverse_curvatures_.push_back(1.0 / curvature);
+        }
+
+        LBFGSOptions options_;
+        std::vector<NetworkGradients> steps_;
+        std::vector<NetworkGradients> gradient_changes_;
+        std::vector<double> inverse_curvatures_;
     };
 
     std::unique_ptr<Optimizer> make_sgd_instance(
@@ -964,6 +1359,12 @@ namespace
     }
     std::unique_ptr<Optimizer> make_cadamw_instance(CAdamWOptions options) {
         return std::make_unique<CAdamWOptimizer>(std::move(options));
+    }
+    std::unique_ptr<Optimizer> make_newton_cg_instance(NewtonCGOptions options) {
+        return std::make_unique<NewtonCGOptimizer>(std::move(options));
+    }
+    std::unique_ptr<Optimizer> make_lbfgs_instance(LBFGSOptions options) {
+        return std::make_unique<LBFGSOptimizer>(std::move(options));
     }
 }
 
@@ -1117,13 +1518,66 @@ OptimizerSpec make_cadamw(CAdamWOptions options) {
     );
 }
 
+OptimizerSpec make_newton_cg(NewtonCGOptions options) {
+    if (!std::isfinite(options.damping) || options.damping <= 0.0) {
+        throw std::invalid_argument("Newton-CG damping must be positive and finite.");
+    }
+    if (options.maximum_cg_iterations == 0) {
+        throw std::invalid_argument("Newton-CG maximum_cg_iterations must be positive.");
+    }
+    if (!std::isfinite(options.absolute_residual_tolerance) ||
+        options.absolute_residual_tolerance < 0.0) {
+        throw std::invalid_argument(
+            "Newton-CG absolute_residual_tolerance must be finite and non-negative."
+        );
+    }
+    if (!std::isfinite(options.relative_residual_tolerance) ||
+        options.relative_residual_tolerance < 0.0) {
+        throw std::invalid_argument(
+            "Newton-CG relative_residual_tolerance must be finite and non-negative."
+        );
+    }
+    if (!std::isfinite(options.negative_curvature_tolerance) ||
+        options.negative_curvature_tolerance < 0.0) {
+        throw std::invalid_argument(
+            "Newton-CG negative_curvature_tolerance must be finite and non-negative."
+        );
+    }
+    validate_wolfe_parameters(options.line_search);
+    const NewtonCGOptions configured = options;
+    return make_custom_optimizer(
+        "NewtonCG",
+        OptimizerRequirement::DeterministicFullBatch,
+        [configured]() { return make_newton_cg_instance(configured); },
+        false
+    );
+}
+
 OptimizerSpec make_lbfgs(LBFGSOptions options) {
-    static_cast<void>(options);
-    return OptimizerSpec{
+    if (options.history_size == 0) {
+        throw std::invalid_argument("L-BFGS history_size must be positive.");
+    }
+    if (!std::isfinite(options.curvature_tolerance) ||
+        options.curvature_tolerance <= 0.0) {
+        throw std::invalid_argument(
+            "L-BFGS curvature_tolerance must be positive and finite."
+        );
+    }
+    switch (options.line_search_policy) {
+    case LBFGSLineSearchPolicy::StrongWolfeRequired:
+    case LBFGSLineSearchPolicy::ArmijoFallbackWithoutHistory:
+        break;
+    default:
+        throw std::invalid_argument("L-BFGS line-search policy is invalid.");
+    }
+    validate_wolfe_parameters(options.line_search);
+    const LBFGSOptions configured = options;
+    return make_custom_optimizer(
         "LBFGS",
         OptimizerRequirement::DeterministicFullBatch,
-        {}
-    };
+        [configured]() { return make_lbfgs_instance(configured); },
+        false
+    );
 }
 #pragma endregion
 
@@ -1143,6 +1597,8 @@ namespace Optimizers {
     const OptimizerSpec AdamW = make_adamw();
 
     const OptimizerSpec CAdamW = make_cadamw();
+
+    const OptimizerSpec NewtonCG = make_newton_cg();
 
     const OptimizerSpec LBFGS = make_lbfgs();
 }

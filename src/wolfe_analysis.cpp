@@ -255,7 +255,30 @@ WolfeEvaluation evaluate_wolfe_candidate(
 	const ObjectiveFunctions& objective
 )
 {
-	validate_objective_functions(objective);
+	return evaluate_wolfe_candidate(
+		current_network,
+		batch,
+		current_loss,
+		current_gradient,
+		direction,
+		step_size,
+		parameters,
+		make_objective_config(objective)
+	);
+}
+
+WolfeEvaluation evaluate_wolfe_candidate(
+    const MLP& current_network,
+    const Dataset& batch,
+    const double current_loss,
+    const NetworkGradients& current_gradient,
+    const NetworkDirection& direction,
+    const double step_size,
+    const WolfeParameters& parameters,
+    const ObjectiveConfig& objective
+)
+{
+	validate_objective_config(objective);
 	validate_wolfe_parameters(parameters);
     validate_network(current_network);
     validate_gradients_like(current_network, current_gradient);
@@ -269,8 +292,8 @@ WolfeEvaluation evaluate_wolfe_candidate(
         );
     }
 
-    auto candidate_network = make_candidate_network(current_network, direction, step_size);
-    auto candidate_loss = batch_loss(candidate_network, batch, objective);
+	auto candidate_network = make_candidate_network(current_network, direction, step_size);
+	auto candidate_loss = objective_loss(candidate_network, batch, objective);
     bool satisfies_suff_decrease = satisfies_sufficient_decrease(
         candidate_loss,
         current_loss,
@@ -278,7 +301,7 @@ WolfeEvaluation evaluate_wolfe_candidate(
         network_vector_dot(current_gradient, direction),
         parameters.sufficient_decrease
 	);
-    auto candidate_gradient = batch_gradients(candidate_network, batch, objective);
+	auto candidate_gradient = objective_gradients(candidate_network, batch, objective);
     bool satisfies_strong_curv = satisfies_strong_curvature(
         network_vector_dot(candidate_gradient, direction),
         network_vector_dot(current_gradient, direction),
@@ -296,7 +319,7 @@ WolfeEvaluation evaluate_wolfe_candidate(
         satisfies_strong_curv,
         candidate_network,
         candidate_gradient,
-        objective
+        objective.data_objective
     };
 
     return evaluation;
@@ -312,10 +335,31 @@ LineSearchResult backtracking_wolfe_stepsize(
     const ObjectiveFunctions& objective
 )
 {
+	return backtracking_wolfe_stepsize(
+		current_network,
+		batch,
+		current_loss,
+		current_gradient,
+		direction,
+		parameters,
+		make_objective_config(objective)
+	);
+}
+
+LineSearchResult backtracking_wolfe_stepsize(
+    const MLP& current_network,
+    const Dataset& batch,
+    const double current_loss,
+    const NetworkGradients& current_gradient,
+    const NetworkDirection& direction,
+    const WolfeParameters& parameters,
+    const ObjectiveConfig& objective
+)
+{
     validate_network(current_network);
     validate_gradients_like(current_network, current_gradient);
     validate_gradients_like(current_network, direction);
-    validate_objective_functions(objective);
+    validate_objective_config(objective);
     validate_wolfe_parameters(parameters);
 
     if (!std::isfinite(current_loss)) {
