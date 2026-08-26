@@ -1,5 +1,5 @@
 // Wolfe line-search and direction-analysis implementation.
-#include "../include/nncpp/wolfe_analysis.hpp"
+#include "detail/wolfe_analysis.hpp"
 
 #include <algorithm>
 #include <cmath>

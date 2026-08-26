@@ -1,4 +1,6 @@
-#include "../include/nncpp/train.hpp"
+#include "detail/train.hpp"
+
+#include "detail/objective_functions.hpp"
 
 #include <algorithm>
 #include <cmath>

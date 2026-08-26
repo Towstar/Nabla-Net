@@ -1,6 +1,6 @@
 #include "../include/nncpp/mlp.hpp"
 #include "../include/nncpp/objective_functions.hpp"
-#include "../include/nncpp/common.hpp"
+#include "detail/common.hpp"
 
 #include <cmath>
 #include <random>

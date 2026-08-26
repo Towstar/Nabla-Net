@@ -19,7 +19,7 @@ int main()
         make_elastic_net_regularization(regularization)
     );
 
-    std::cout << "NeuralNetworkCPP library example: "
+    std::cout << "NablaNet library example: "
               << parameter_count(network) << " parameters; "
               << objective.regularizers.front().name << " configured\n";
     return 0;

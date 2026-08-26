@@ -1,5 +1,5 @@
 #include "../include/nncpp/optimizers.hpp"
-#include "../include/nncpp/wolfe_analysis.hpp"
+#include "detail/wolfe_analysis.hpp"
 
 #include <cmath>
 #include <cctype>

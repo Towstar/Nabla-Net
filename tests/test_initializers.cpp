@@ -1,4 +1,4 @@
-#include "mlp.hpp"
+#include <nncpp/mlp.hpp>
 
 #include <cmath>
 #include <exception>

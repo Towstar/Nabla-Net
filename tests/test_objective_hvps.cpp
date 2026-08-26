@@ -1,5 +1,5 @@
-#include "mlp.hpp"
-#include "objective_functions.hpp"
+#include <nncpp/mlp.hpp>
+#include <nncpp/objective_functions.hpp>
 
 #include <cmath>
 #include <exception>

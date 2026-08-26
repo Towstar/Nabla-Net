@@ -363,12 +363,9 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# Local learning and session notes
-NNCPPP-Practice/local-notes/
-/NNCPPP-Practice/.codex-tmp
+# Local learning data and archived notes
+/local-notes/
 /.codex-tmp/ce-check
-/NNCPPP-Practice/notes/PATH.md
-/NNCPPP-Practice/.github/copilot-instructions.md
 
 # CMake and local command-line verification outputs
 .codex-cmake-build*/
@@ -396,3 +393,4 @@ NNCPPP-Practice/local-notes/
 *.toc
 *.out
 examples/cs2_hvp_example.cpp
+DOCUMENTATION_PLAN.md

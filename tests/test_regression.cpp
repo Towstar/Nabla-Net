@@ -9,12 +9,14 @@
 #include <string_view>
 #include <utility>
 
-#include "mlp.hpp"
-#include "objective_functions.hpp"
-#include "optimizers.hpp"
-#include "train.hpp"
-#include "wolfe_analysis.hpp"
-#include "train.hpp"
+#include <nncpp/mlp.hpp>
+#include <nncpp/objective_functions.hpp>
+#include <nncpp/optimizers.hpp>
+#include <nncpp/train.hpp>
+
+#include "../src/detail/objective_functions.hpp"
+#include "../src/detail/train.hpp"
+#include "../src/detail/wolfe_analysis.hpp"
 
 namespace {
 void require(const bool condition, const std::string_view message)
@@ -5231,4 +5233,15 @@ void run_all_self_checks()
     run_public_training_api_checks();
     run_training_contract_checks();
     run_phase_one_stub_checks();
+}
+
+int main()
+{
+    try {
+        run_all_self_checks();
+        return 0;
+    } catch (const std::exception& exception) {
+        std::cerr << "[FAIL] " << exception.what() << '\n';
+        return 1;
+    }
 }

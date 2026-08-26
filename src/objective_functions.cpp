@@ -1,4 +1,4 @@
-#include "../include/nncpp/objective_functions.hpp"
+#include "detail/objective_functions.hpp"
 
 #include <algorithm>
 #include <cmath>

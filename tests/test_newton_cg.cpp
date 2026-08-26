@@ -1,7 +1,7 @@
-#include "mlp.hpp"
-#include "objective_functions.hpp"
-#include "optimizers.hpp"
-#include "train.hpp"
+#include <nncpp/mlp.hpp>
+#include <nncpp/objective_functions.hpp>
+#include <nncpp/optimizers.hpp>
+#include <nncpp/train.hpp>
 
 #include <cmath>
 #include <exception>

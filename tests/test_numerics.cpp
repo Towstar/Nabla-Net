@@ -1,4 +1,4 @@
-#include "common.hpp"
+#include "../src/detail/common.hpp"
 
 #include <cmath>
 #include <exception>

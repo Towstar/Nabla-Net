@@ -1,6 +1,6 @@
-# NeuralNetworkCPP
+# NablaNet
 
-NeuralNetworkCPP is a dependency-free C++20 scientific-ML learning library
+NablaNet is a dependency-free C++20 scientific-ML learning library
 written from first principles. Its current core is a configurable multilayer
 perceptron with manual forward propagation, backpropagation, objective
 callbacks, regularization, optimizer factories, deterministic batching, and a
@@ -16,7 +16,7 @@ From PowerShell, Git Bash, or a terminal:
 
 ```text
 git clone <repository-url>
-cd NeuralNetworkCPP
+cd NablaNet
 ```
 
 If you received the project as a folder or archive, open that folder instead.
@@ -84,14 +84,6 @@ cmake -S . -B build-vs -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
 Open the generated solution under `build-vs/`. Do not edit generated project
 files; edit `CMakeLists.txt` and regenerate instead.
 
-The older solution remains at:
-
-```text
-NNCPPP-Practice/NNCPPP-Practice.sln
-```
-
-It is preserved for compatibility with the original Visual Studio workflow.
-
 ### VS Code
 
 Open the project root in VS Code:
@@ -114,7 +106,7 @@ examples/            Small consumer-facing examples.
 cmake/               Installed-package configuration templates.
 CMakeLists.txt       Library, example, test, install, and package definitions.
 .github/workflows/   Windows CMake and CTest continuous integration.
-NNCPPP-Practice/     Legacy Visual Studio project and compatibility checks.
+local-notes/         Ignored local data and archived learning notes.
 ```
 
 The public umbrella include is:
@@ -125,6 +117,36 @@ The public umbrella include is:
 
 The CMake library target is `nncpp`, with the consumer-facing alias
 `nncpp::nncpp`.
+
+## Public API boundaries
+
+`<nncpp/nncpp.hpp>` is the supported, high-level entry point. It provides the
+MLP model and activation configuration, objective and regularization factories,
+optimizer factories (including Newton--CG and L-BFGS), and `train`.
+
+The installed package deliberately contains only these headers:
+
+```text
+nncpp.hpp
+mlp.hpp
+objective_functions.hpp
+optimizers.hpp
+train.hpp
+```
+
+The derivative APIs in `mlp.hpp` and `objective_functions.hpp` remain public
+advanced APIs: `forward_jvp`, `backward`,
+`loss_hessian_vector_product`, and `objective_hessian_vector_product` are part
+of the project’s educational curvature-focused surface. `Optimizer`,
+`OptimizerContext`, and `make_custom_optimizer` are likewise public advanced
+extension points for callers implementing an optimizer.
+
+CSV/data-location helpers, individual Wolfe-search functions, objective
+aggregation, and training batching/validation helpers now live under
+`src/detail/`. They are used by the library and retained legacy examples, but
+are not installed and are not part of the supported consumer API. Normal users
+configure Newton--CG and L-BFGS through their options structs rather than
+calling the line search directly.
 
 ## Current functionality
 
@@ -205,7 +227,7 @@ cmake --install build --config Release --prefix "$PWD/install"
 An external CMake project can then use the exported target:
 
 ```cmake
-find_package(NeuralNetworkCPP CONFIG REQUIRED)
+find_package(NablaNet CONFIG REQUIRED)
 
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE nncpp::nncpp)

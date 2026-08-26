@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(NeuralNetworkCPP VERSION 0.1.0 LANGUAGES CXX)
+project(NablaNet VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -26,7 +26,6 @@ add_library(nncpp::nncpp ALIAS nncpp)
 
 target_include_directories(nncpp
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/NNCPPP-Practice>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
@@ -68,56 +67,45 @@ if(BUILD_TESTING)
     add_nncpp_test(nncpp_test_regularization tests/test_regularization.cpp Regularization)
     add_nncpp_test(nncpp_test_autodiff tests/test_autodiff.cpp Autodiff)
     add_nncpp_test(nncpp_test_objective_hvps tests/test_objective_hvps.cpp Autodiff)
+    add_nncpp_test(nncpp_test_classification_objectives tests/test_classification_objectives.cpp Objectives)
     add_nncpp_test(nncpp_test_newton_cg tests/test_newton_cg.cpp Optimizers)
     add_nncpp_test(nncpp_test_lbfgs tests/test_lbfgs.cpp Optimizers)
-
-    add_executable(nncpp_legacy_self_checks
-        tests/legacy_main.cpp
-        NNCPPP-Practice/self_checks.cpp
-    )
-    target_link_libraries(nncpp_legacy_self_checks PRIVATE nncpp::nncpp)
-    add_test(NAME nncpp_legacy_self_checks COMMAND nncpp_legacy_self_checks)
-    set_tests_properties(nncpp_legacy_self_checks PROPERTIES LABELS "Legacy;Regression")
-    if(MINGW)
-        get_filename_component(NNCPP_COMPILER_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
-        set_tests_properties(nncpp_legacy_self_checks PROPERTIES
-            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${NNCPP_COMPILER_BIN}"
-        )
-    endif()
+    add_nncpp_test(nncpp_test_regression tests/test_regression.cpp Regression)
 endif()
 
 install(TARGETS nncpp
-    EXPORT NeuralNetworkCPPTargets
+    EXPORT NablaNetTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(DIRECTORY include/nncpp/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nncpp
-    FILES_MATCHING PATTERN "*.hpp"
-)
-install(FILES include/nncpp/nncpp.hpp
+install(FILES
+    include/nncpp/nncpp.hpp
+    include/nncpp/mlp.hpp
+    include/nncpp/objective_functions.hpp
+    include/nncpp/optimizers.hpp
+    include/nncpp/train.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nncpp
 )
 
-install(EXPORT NeuralNetworkCPPTargets
-    FILE NeuralNetworkCPPTargets.cmake
+install(EXPORT NablaNetTargets
+    FILE NablaNetTargets.cmake
     NAMESPACE nncpp::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NeuralNetworkCPP
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NablaNet
 )
 
 configure_package_config_file(
-    cmake/NeuralNetworkCPPConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/NeuralNetworkCPPConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NeuralNetworkCPP
+    cmake/NablaNetConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/NablaNetConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NablaNet
 )
 write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/NeuralNetworkCPPConfigVersion.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/NablaNetConfigVersion.cmake
     COMPATIBILITY SameMajorVersion
 )
 install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/NeuralNetworkCPPConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/NeuralNetworkCPPConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NeuralNetworkCPP
+    ${CMAKE_CURRENT_BINARY_DIR}/NablaNetConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/NablaNetConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NablaNet
 )

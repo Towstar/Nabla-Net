@@ -237,24 +237,6 @@ double regularization_loss(
 );
 
 /// <summary>
-/// Adds smooth regularization gradients to an existing gradient vector.
-/// </summary>
-void add_regularization_gradients(
-    const MLP& network,
-    const ObjectiveConfig& objective,
-    NetworkGradients& gradients
-);
-
-/// <summary>
-/// Applies all configured proximal regularization updates in place.
-/// </summary>
-void apply_proximal_updates(
-    MLP& network,
-    const ObjectiveConfig& objective,
-    double effective_step_size
-);
-
-/// <summary>
 /// Computes data loss plus regularization loss for a batch.
 /// </summary>
 double objective_loss(

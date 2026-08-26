@@ -1,11 +1,10 @@
 #pragma once
 
-// Stable umbrella include for consumers of the installed library.  The
-// individual headers are installed beside this file so their existing
-// relative includes remain valid.
-#include "common.hpp"
+// Stable high-level umbrella include for consumers of the installed library.
+// It exposes model construction, objectives, optimizers, and training.  CSV
+// helpers and line-search implementation mechanics intentionally remain
+// source-private implementation details.
 #include "mlp.hpp"
 #include "objective_functions.hpp"
 #include "optimizers.hpp"
 #include "train.hpp"
-#include "wolfe_analysis.hpp"
