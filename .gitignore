@@ -365,6 +365,9 @@ FodyWeavers.xsd
 
 # Local learning data and archived notes
 /local-notes/
+/.agents/
+/.codex/
+/AGENTS.md
 /.codex-tmp/ce-check
 
 # CMake and local command-line verification outputs

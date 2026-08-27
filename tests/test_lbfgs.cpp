@@ -1,13 +1,15 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
-#include <nncpp/optimizers.hpp>
-#include <nncpp/train.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
+#include <nablanet/optimizers.hpp>
+#include <nablanet/train.hpp>
 
 #include <cmath>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+
+using namespace nablanet;
 
 namespace {
 

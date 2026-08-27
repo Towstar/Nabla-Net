@@ -1,6 +1,8 @@
 #pragma once
 
-#include "../../include/nncpp/objective_functions.hpp"
+#include "../../include/nablanet/objective_functions.hpp"
+
+namespace nablanet {
 
 // Internal line-search implementation contract. Public callers configure the
 // line search through WolfeParameters in optimizer options; they do not need
@@ -119,3 +121,5 @@ TrainingStepResult take_wolfe_gradient_step(
 const char* line_search_status_name(
     LineSearchStatus status
 ) noexcept;
+
+} // namespace nablanet

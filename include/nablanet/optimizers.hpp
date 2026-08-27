@@ -11,6 +11,8 @@
 
 #include "objective_functions.hpp"
 
+namespace nablanet {
+
 enum class OptimizerRequirement {
     MiniBatchCompatible,
     DeterministicFullBatch
@@ -391,3 +393,5 @@ std::ostream& operator<<(std::ostream& output, const TrainingReport& report);
 /// Converts a training stop reason to a display string.
 /// </summary>
 std::string trainingStopReasonToString(TrainingStopReason reason);
+
+} // namespace nablanet

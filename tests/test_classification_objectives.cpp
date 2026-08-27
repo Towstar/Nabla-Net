@@ -1,11 +1,15 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
+#include <nablanet/optimizers.hpp>
+#include <nablanet/train.hpp>
 
 #include <cmath>
 #include <exception>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+
+using namespace nablanet;
 
 namespace {
 
@@ -53,6 +57,40 @@ void require_invalid_argument(Action&& action, const char* message)
     throw std::runtime_error(message);
 }
 
+template <typename Action>
+void require_overflow_error(Action&& action, const char* message)
+{
+    try {
+        action();
+    } catch (const std::overflow_error&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
+Values central_difference_gradient(
+    const ObjectiveFunctions& objective,
+    const Values& logits,
+    const Values& targets
+)
+{
+    constexpr double step = 1e-6;
+    Values numerical_gradient(logits.size(), 0.0);
+
+    for (std::size_t index = 0; index < logits.size(); ++index) {
+        Values plus = logits;
+        Values minus = logits;
+        plus[index] += step;
+        minus[index] -= step;
+        numerical_gradient[index] =
+            (objective.sample_loss(plus, targets) -
+             objective.sample_loss(minus, targets)) /
+            (2.0 * step);
+    }
+
+    return numerical_gradient;
+}
+
 void test_exponential_objective_contract()
 {
     const ObjectiveFunctions objective = make_exponential_objective();
@@ -84,6 +122,12 @@ void test_exponential_objective_contract()
         1e-12,
         "Exponential loss gradient must match -y * exp(-y * z)"
     );
+    require_values_near(
+        objective.sample_loss_gradient(logits, targets),
+        central_difference_gradient(objective, logits, targets),
+        1e-7,
+        "Exponential loss gradient must match a finite difference of its loss"
+    );
 
     // H_L v has coordinates y_i^2 exp(-y_i z_i) v_i / output_width.
     require_values_near(
@@ -110,6 +154,10 @@ void test_exponential_objective_contract()
             ));
         },
         "Exponential loss HVP must reject non-finite tangents"
+    );
+    require_overflow_error(
+        [&] { static_cast<void>(objective.sample_loss({ -1000.0 }, { 1.0 })); },
+        "Exponential loss must report values beyond double precision as overflow"
     );
 }
 
@@ -166,6 +214,37 @@ void test_hinge_objective_contract()
     );
 }
 
+void test_binary_objectives_lower_training_loss()
+{
+    const Dataset dataset{
+        { { -1.0 }, { -1.0 } },
+        { { 1.0 }, { 1.0 } }
+    };
+
+    SGDOptions sgd_options;
+    sgd_options.learning_rate_schedule = [](std::size_t) { return 0.1; };
+    TrainingConfig training;
+    training.max_iterations = 20;
+    training.max_epochs.reset();
+
+    for (const ObjectiveFunctions& objective : {
+            make_exponential_objective(), make_hinge_objective() }) {
+        MLP network = make_zero_network({ 1, 1 });
+        network.layer_activations = { Activations::Linear };
+        const ObjectiveConfig configuration = make_objective_config(objective);
+        const double initial_loss = objective_loss(network, dataset, configuration);
+
+        const TrainingReport report = train(
+            network, dataset, make_sgd(sgd_options), training, configuration
+        );
+
+        require(report.steps == 20,
+            "Binary-objective training must run the configured deterministic steps");
+        require(report.final_loss < initial_loss,
+            "A linear separable dataset must lower binary-objective training loss");
+    }
+}
+
 } // namespace
 
 int main()
@@ -173,6 +252,7 @@ int main()
     try {
         test_exponential_objective_contract();
         test_hinge_objective_contract();
+        test_binary_objectives_lower_training_loss();
         std::cout << "[PASS] exponential and hinge objective contracts\n";
         return 0;
     } catch (const std::exception& exception) {

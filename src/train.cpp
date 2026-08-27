@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <utility>
 
+namespace nablanet {
+
 namespace {
 bool has_proximal_regularizer(const ObjectiveConfig& objective)
 {
@@ -254,3 +256,5 @@ double parameter_change(const MLP& before, const MLP& after) {
     }
     return maximum_change;
 }
+
+} // namespace nablanet

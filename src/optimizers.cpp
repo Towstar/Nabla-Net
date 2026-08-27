@@ -1,4 +1,4 @@
-#include "../include/nncpp/optimizers.hpp"
+#include "../include/nablanet/optimizers.hpp"
 #include "detail/wolfe_analysis.hpp"
 
 #include <cmath>
@@ -10,6 +10,8 @@
 #include <iostream>
 #include <ranges>
 #include <algorithm>
+
+namespace nablanet {
 
 #pragma region Optimizer Implementations and Factories
 
@@ -1793,3 +1795,5 @@ std::string trainingStopReasonToString(TrainingStopReason reason) {
 }
 
 #pragma endregion
+
+} // namespace nablanet

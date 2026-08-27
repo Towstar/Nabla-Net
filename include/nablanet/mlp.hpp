@@ -7,6 +7,8 @@
 #include <vector>
 #include <functional>
 
+namespace nablanet {
+
 using Values = std::vector<double>;
 
 // Activation scaffolding. The scalar aliases are used by the helper for
@@ -565,3 +567,5 @@ void apply_gradient(
     const NetworkGradients& gradients,
     double learning_rate
 );
+
+} // namespace nablanet

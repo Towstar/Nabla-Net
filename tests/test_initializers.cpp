@@ -1,9 +1,11 @@
-#include <nncpp/mlp.hpp>
+#include <nablanet/mlp.hpp>
 
 #include <cmath>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+
+using namespace nablanet;
 
 namespace {
 void require(bool condition, const char* message)

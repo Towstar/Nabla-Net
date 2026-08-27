@@ -6,6 +6,8 @@
 #include <limits>
 #include <stdexcept>
 
+using namespace nablanet;
+
 namespace {
 void require_near(double actual, double expected, double tolerance, const char* message)
 {

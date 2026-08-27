@@ -1,10 +1,12 @@
 #pragma once
 
-#include "../../include/nncpp/train.hpp"
+#include "../../include/nablanet/train.hpp"
 
 #include <cstddef>
 #include <random>
 #include <vector>
+
+namespace nablanet {
 
 // Internal batching and validation helpers used to implement train().
 void validate_training_inputs(
@@ -34,3 +36,5 @@ Dataset make_batch(
 );
 
 double parameter_change(const MLP& before, const MLP& after);
+
+} // namespace nablanet

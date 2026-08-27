@@ -1,11 +1,13 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
-#include <nncpp/optimizers.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
+#include <nablanet/optimizers.hpp>
 
 #include <cmath>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+
+using namespace nablanet;
 
 namespace {
 void require(bool condition, const char* message)

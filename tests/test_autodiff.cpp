@@ -1,5 +1,5 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
 
 #include <cmath>
 #include <exception>
@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+
+using namespace nablanet;
 
 namespace {
 

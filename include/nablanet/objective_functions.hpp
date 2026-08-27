@@ -4,6 +4,8 @@
 
 #include <vector>
 
+namespace nablanet {
+
 // Objective-function primitives and objective factories.
 /// <summary>
 /// Converts logits to normalized probabilities using a stable softmax.
@@ -42,12 +44,17 @@ ObjectiveFunctions make_softmax_cross_entropy_objective();
 ObjectiveFunctions make_mean_squared_error_objective();
 
 /// <summary>
-/// Creates the exponential-loss objective.
+/// Creates the coordinatewise exponential-loss objective for {-1,+1} targets.
+/// It consumes output-layer pre-activations and averages exp(-y * z) across
+/// output coordinates.
 /// </summary>
 ObjectiveFunctions make_exponential_objective();
 
 /// <summary>
-/// Creates the hinge-loss objective.
+/// Creates the coordinatewise hinge-loss objective for {-1,+1} targets.
+/// It consumes output-layer pre-activations, averages max(0, 1 - y * z), and
+/// uses zero as the deterministic subgradient at the margin kink. This
+/// non-smooth objective does not support Hessian-vector products.
 /// </summary>
 ObjectiveFunctions make_hinge_objective();
 
@@ -265,3 +272,5 @@ NetworkGradients objective_hessian_vector_product(
     const NetworkTangent& parameter_tangent,
     const ObjectiveConfig& objective
 );
+
+} // namespace nablanet

@@ -9,14 +9,16 @@
 #include <string_view>
 #include <utility>
 
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
-#include <nncpp/optimizers.hpp>
-#include <nncpp/train.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
+#include <nablanet/optimizers.hpp>
+#include <nablanet/train.hpp>
 
 #include "../src/detail/objective_functions.hpp"
 #include "../src/detail/train.hpp"
 #include "../src/detail/wolfe_analysis.hpp"
+
+using namespace nablanet;
 
 namespace {
 void require(const bool condition, const std::string_view message)

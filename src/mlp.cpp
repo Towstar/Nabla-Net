@@ -1,5 +1,5 @@
-#include "../include/nncpp/mlp.hpp"
-#include "../include/nncpp/objective_functions.hpp"
+#include "../include/nablanet/mlp.hpp"
+#include "../include/nablanet/objective_functions.hpp"
 #include "detail/common.hpp"
 
 #include <cmath>
@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+
+namespace nablanet {
 
 #pragma region Dense Layer Accessors
 
@@ -1507,3 +1509,5 @@ void apply_gradient(MLP& network, const NetworkGradients& gradients, const doubl
 }
 
 #pragma endregion
+
+} // namespace nablanet

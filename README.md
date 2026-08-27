@@ -1,246 +1,125 @@
 # NablaNet
 
-NablaNet is a dependency-free C++20 scientific-ML learning library
-written from first principles. Its current core is a configurable multilayer
-perceptron with manual forward propagation, backpropagation, objective
-callbacks, regularization, optimizer factories, deterministic batching, and a
-report-returning training facade.
+NablaNet is a dependency-free C++20 multilayer-perceptron library written
+from first principles. It is an MIT-licensed educational project: the public
+API and test suite are designed to make model construction, objectives,
+optimization, and curvature methods inspectable.
 
-The repository is organized as a reusable library, but remains explicit and
-small enough to study. The canonical build is CMake-based. The older Visual
-Studio project is retained as a compatibility and learning path.
+The initial `0.x` series is static-library only. It provides dense MLPs,
+configurable activations and initializers, binary/softmax objectives, MSE,
+regularization, SGD through AdamW/CAdamW, deterministic training, exact
+Hessian-vector products, Newton-CG, and L-BFGS.
 
-## Get the project locally
+## Requirements
 
-From PowerShell, Git Bash, or a terminal:
+- CMake 3.21 or newer (CTest is distributed with CMake).
+- A C++20 compiler. On Windows, Visual Studio 2026 with the Desktop
+  development with C++ workload is supported.
+- No third-party C++ dependencies.
 
-```text
-git clone <repository-url>
-cd NablaNet
-```
+## Build and test
 
-If you received the project as a folder or archive, open that folder instead.
-The directory containing this README and `CMakeLists.txt` is the project root.
+Run these commands from the repository root.
 
-You need:
-
-- CMake 3.21 or newer.
-- A C++20 compiler.
-- On Windows, Visual Studio 2022 with the Desktop development with C++
-  workload, or a working MinGW/GCC installation.
-- No third-party C++ libraries are required.
-
-## Build and test with CMake
-
-Run these commands from the project root.
-
-### Windows with Visual Studio 2022
+### Windows and Visual Studio 2026
 
 ```powershell
-cmake -S . -B build -A x64 `
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 `
   -DBUILD_TESTING=ON `
-  -DNNCPP_BUILD_EXAMPLES=ON
+  -DNABLANET_BUILD_EXAMPLES=ON
 
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Run only optimizer tests:
+### Linux, macOS, or another single-configuration generator
 
-```powershell
-ctest --test-dir build -C Release -L Optimizers --output-on-failure
+```sh
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=ON \
+  -DNABLANET_BUILD_EXAMPLES=ON
+
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
-### MinGW or another single-configuration generator
+Focused objective checks are available with:
 
-```powershell
-cmake -S . -B build-mingw `
-  -G "MinGW Makefiles" `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DBUILD_TESTING=ON `
-  -DNNCPP_BUILD_EXAMPLES=ON
-
-cmake --build build-mingw --parallel
-ctest --test-dir build-mingw --output-on-failure
+```sh
+ctest --test-dir build -L Objectives --output-on-failure
 ```
 
-`build/` and `build-mingw/` are generated directories. They are intentionally
-ignored by Git and can be deleted and regenerated at any time.
+## Use from CMake
 
-## Using Visual Studio or VS Code
-
-### Visual Studio 2022 CMake mode
-
-Use `File → Open → Folder` and select the directory containing this README and
-`CMakeLists.txt`. Visual Studio will detect the CMake project and expose the
-library, example, and test targets.
-
-You can also generate a Visual Studio solution from a terminal:
-
-```powershell
-cmake -S . -B build-vs -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
-```
-
-Open the generated solution under `build-vs/`. Do not edit generated project
-files; edit `CMakeLists.txt` and regenerate instead.
-
-### VS Code
-
-Open the project root in VS Code:
-
-```powershell
-code .
-```
-
-The Microsoft C/C++ and CMake Tools extensions are convenient but not required
-when using the terminal commands above. The important rule is to edit the
-canonical files under `src/`, `include/nncpp/`, `tests/`, and `examples/`.
-
-## Repository structure
-
-```text
-include/nncpp/       Public headers installed for library users.
-src/                 Library implementations.
-tests/               Focused test executables registered with CTest.
-examples/            Small consumer-facing examples.
-cmake/               Installed-package configuration templates.
-CMakeLists.txt       Library, example, test, install, and package definitions.
-.github/workflows/   Windows CMake and CTest continuous integration.
-local-notes/         Ignored local data and archived learning notes.
-```
-
-The public umbrella include is:
-
-```cpp
-#include <nncpp/nncpp.hpp>
-```
-
-The CMake library target is `nncpp`, with the consumer-facing alias
-`nncpp::nncpp`.
-
-## Public API boundaries
-
-`<nncpp/nncpp.hpp>` is the supported, high-level entry point. It provides the
-MLP model and activation configuration, objective and regularization factories,
-optimizer factories (including Newton--CG and L-BFGS), and `train`.
-
-The installed package deliberately contains only these headers:
-
-```text
-nncpp.hpp
-mlp.hpp
-objective_functions.hpp
-optimizers.hpp
-train.hpp
-```
-
-The derivative APIs in `mlp.hpp` and `objective_functions.hpp` remain public
-advanced APIs: `forward_jvp`, `backward`,
-`loss_hessian_vector_product`, and `objective_hessian_vector_product` are part
-of the project’s educational curvature-focused surface. `Optimizer`,
-`OptimizerContext`, and `make_custom_optimizer` are likewise public advanced
-extension points for callers implementing an optimizer.
-
-CSV/data-location helpers, individual Wolfe-search functions, objective
-aggregation, and training batching/validation helpers now live under
-`src/detail/`. They are used by the library and retained legacy examples, but
-are not installed and are not part of the supported consumer API. Normal users
-configure Newton--CG and L-BFGS through their options structs rather than
-calling the line search directly.
-
-## Current functionality
-
-- Dense MLP construction and validation.
-- Deterministic Xavier, Kaiming-He, LeCun, and zero initialization.
-- One selectable activation per dense layer.
-- Stable sigmoid, normal PDF/CDF helpers, forward caches, manual backward
-  propagation, batch gradients, and finite-difference checks.
-- Binary cross-entropy, softmax cross-entropy, activated-output MSE, objective
-  composition, L2, configurable L1 (subgradient, proximal, epsilon-smooth,
-  and log-cosh-smooth), and elastic-net regularization.
-- SGD, Momentum SGD, AdaGrad, RMSProp, Adam, AdamW, and cautious AdamW.
-- Full-batch, mini-batch, and stochastic training with deterministic shuffling.
-- Training stopping conditions and `TrainingReport` streaming.
-- End-to-end XOR convergence through the public `train()` API.
-- Wolfe and line-search groundwork for a future L-BFGS implementation.
-
-## Testing
-
-CTest runs the focused tests individually and supports labels:
-
-```powershell
-ctest --test-dir build -C Release --output-on-failure
-ctest --test-dir build -C Release -L Activations --output-on-failure
-ctest --test-dir build -C Release -L Initialization --output-on-failure
-ctest --test-dir build -C Release -L Optimizers --output-on-failure
-ctest --test-dir build -C Release -L Regularization --output-on-failure
-```
-
-The legacy `self_checks.cpp` executable remains a broad regression harness.
-New behavior should normally receive a focused test under `tests/` and a CTest
-label.
-
-## Configuring elastic net
-
-The short form uses an L1 subgradient and excludes biases:
-
-```cpp
-const RegularizationTerm elastic_net =
-    make_elastic_net_regularization(1e-4, 5e-4);
-```
-
-For an L1 method with additional parameters, use `ElasticNetOptions`. The
-proximal choice applies L2 through backpropagation, then soft-thresholds the
-selected parameters with `step_size * l1_coefficient` after each optimizer
-step.
-
-```cpp
-ElasticNetOptions options;
-options.l1_coefficient = 1e-4;
-options.l2_coefficient = 5e-4;
-options.l1.method = L1Method::Proximal;
-options.l1.include_biases = false;
-
-const ObjectiveConfig objective = make_objective_config(
-    make_binary_cross_entropy_objective(),
-    make_elastic_net_regularization(options)
-);
-```
-
-Smooth alternatives use the same options object:
-
-```cpp
-options.l1.method = L1Method::EpsilonSmooth;
-options.l1.epsilon = 1e-5;
-// Or: options.l1.method = L1Method::LogCoshSmooth;
-//     options.l1.temperature = 1e-2;
-```
-
-## Installation for another CMake project
-
-After building, install the library to a local prefix:
+Install the static library to a prefix:
 
 ```powershell
 cmake --install build --config Release --prefix "$PWD/install"
 ```
 
-An external CMake project can then use the exported target:
+Then consume the exported package from another CMake project:
 
 ```cmake
 find_package(NablaNet CONFIG REQUIRED)
 
 add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE nncpp::nncpp)
+target_link_libraries(my_app PRIVATE NablaNet::NablaNet)
 ```
 
-## Development notes
+The public umbrella header is `<nablanet/nablanet.hpp>`, and all public C++
+symbols live in `namespace nablanet`:
 
-Generated build directories, compiler output, Codex scratch files, Visual
-Studio caches, object files, and LaTeX auxiliary files are excluded by
-`.gitignore`. Keep source code, tests, examples, public documentation, and
-reproducible build configuration under version control.
+```cpp
+#include <nablanet/nablanet.hpp>
 
-Future performance work should document deterministic multithreaded CPU
-execution for ordinary batches and PINN collocation points before parallel
-execution is enabled. Determinism is a correctness requirement, not merely a
-benchmark option.
+const nablanet::MLP network = nablanet::make_mlp({2, 3, 1}, 7);
+```
+
+## Exponential and hinge objectives
+
+`make_exponential_objective()` and `make_hinge_objective()` are binary,
+coordinatewise objectives. Both consume the output layer's pre-activations,
+require every target coordinate to be exactly `-1.0` or `+1.0`, and average
+their per-coordinate loss values. They are not softmax multiclass objectives.
+
+For margin classification, configure a linear output layer and use signed
+labels:
+
+```cpp
+nablanet::MLP model = nablanet::make_zero_network({1, 1});
+model.layer_activations = {nablanet::Activations::Linear};
+
+const nablanet::ObjectiveConfig objective = nablanet::make_objective_config(
+    nablanet::make_hinge_objective()
+);
+```
+
+Exponential loss provides exact Hessian-vector products. Hinge loss is
+non-smooth, uses the zero subgradient when `target * logit == 1`, and is
+therefore rejected by curvature optimizers such as Newton-CG.
+
+## Conan 2
+
+The repository contains a Conan 2 recipe for the static package
+`nablanet/0.1.0`. Validate it locally with Conan 2:
+
+```sh
+conan profile detect --force
+conan create . -s build_type=Release -s compiler.cppstd=20
+conan create . -s build_type=Debug -s compiler.cppstd=20
+```
+
+The recipe uses the CMake install rules and its `test_package` builds and runs
+an independent consumer linked through `NablaNet::NablaNet`. The project is
+Conan-ready; publishing to a remote is an explicit later release action.
+
+## Compatibility and releases
+
+NablaNet follows semantic versioning. Before `1.0.0`, source and API changes
+may occur in minor releases; patch releases are reserved for compatible fixes.
+Each release must update `VERSION` and `CHANGELOG.md`, pass the CTest suite,
+verify the installed CMake consumer, and pass `conan create .` for the
+supported configurations.
+
+See [LICENSE.txt](LICENSE.txt) for the MIT license.

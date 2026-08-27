@@ -1,6 +1,8 @@
 #pragma once
 
-#include "../../include/nncpp/objective_functions.hpp"
+#include "../../include/nablanet/objective_functions.hpp"
+
+namespace nablanet {
 
 // Internal objective-composition helpers used by train() and tests. Public
 // callers evaluate complete objectives through objective_loss(),
@@ -16,3 +18,5 @@ void apply_proximal_updates(
     const ObjectiveConfig& objective,
     double effective_step_size
 );
+
+} // namespace nablanet

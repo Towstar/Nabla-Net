@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace nablanet {
+
 /// <summary>
 ///
 /// </summary>
@@ -31,3 +33,5 @@ double stable_softplus(double z) {
 // SVD (Jacobi & BDC)
 
 // FFT (for spectral layers & image processing)
+
+} // namespace nablanet

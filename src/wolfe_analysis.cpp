@@ -5,6 +5,8 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace nablanet {
+
 double dot_product(const Values& left, const Values& right)
 {
     if (left.size() != right.size()) {
@@ -506,3 +508,5 @@ const char* line_search_status_name(const LineSearchStatus status) noexcept
     }
     return "Unknown";
 }
+
+} // namespace nablanet

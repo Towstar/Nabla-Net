@@ -1,11 +1,13 @@
 #include "detail/objective_functions.hpp"
-#include "wolfe_analysis.hpp"
+#include "detail/wolfe_analysis.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
 #include <utility>
+
+namespace nablanet {
 
 /*
 This file contains objectives, loss functions, and regularization terms for training MLPs.
@@ -676,44 +678,6 @@ ObjectiveFunctions make_hinge_objective() {
         }
 
         return gradient;
-    };
-
-    objective.sample_loss_hessian_vector_product = [](
-        const Values& logits,
-        const Values& targets,
-        const Values& logits_tangent
-    ) -> Values {
-        if (logits.empty() || targets.empty() || logits_tangent.empty())
-            throw std::invalid_argument("Logits, targets, and logit tangents must contain at least one value.");
-        if (logits.size() != targets.size() || logits.size() != logits_tangent.size())
-            throw std::invalid_argument("Logits, targets, and logit tangents must have matching sizes.");
-
-        Values result(logits.size(), 0.0);
-
-        for (std::size_t i = 0; i < logits.size(); ++i) {
-            const double logit_i = logits[i];
-            const double target_i = targets[i];
-            const double tangent_i = logits_tangent[i];
-
-            if (!std::isfinite(logit_i))
-                throw std::invalid_argument("Hinge-loss logits must be finite.");
-            if (!std::isfinite(target_i))
-                throw std::invalid_argument("Hinge-loss targets must be finite.");
-            if (target_i != -1.0 && target_i != 1.0)
-                throw std::invalid_argument("Hinge-loss targets must be binary, i.e. {-1,1}.");
-            if (!std::isfinite(tangent_i))
-                throw std::invalid_argument("Hinge-loss logit tangents must be finite.");
-
-            const double margin = target_i * logit_i;
-            if (!std::isfinite(margin))
-                throw std::overflow_error("Hinge-loss margin is not finite.");
-            if (margin == 1.0)
-                throw std::domain_error("Hinge-loss Hessian is undefined when target * logit equals 1.");
-
-            result[i] = 0.0;
-        }
-
-        return result;
     };
 
     return objective;
@@ -1926,3 +1890,5 @@ RegularizationTerm make_elastic_net_regularization(
 }
 
 #pragma endregion
+
+} // namespace nablanet

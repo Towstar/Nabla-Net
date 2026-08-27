@@ -1,10 +1,12 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
 
 #include <cmath>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+
+using namespace nablanet;
 
 namespace {
 void require_near(double actual, double expected, double tolerance, const char* message)

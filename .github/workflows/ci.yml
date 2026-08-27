@@ -1,0 +1,114 @@
+name: NablaNet CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G "Visual Studio 18 2026" -A x64
+          -DBUILD_TESTING=ON -DNABLANET_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install
+        run: cmake --install build --config Release --prefix "$PWD/install"
+
+      - name: Build installed CMake consumer
+        run: >-
+          cmake -S tests/install_consumer -B install-consumer
+          -G "Visual Studio 18 2026" -A x64
+          -DCMAKE_PREFIX_PATH="$PWD/install"
+
+      - name: Run installed CMake consumer
+        run: |
+          cmake --build install-consumer --config Release --parallel
+          ./install-consumer/Release/nablanet_install_consumer.exe
+
+      - name: Install Conan 2
+        run: pipx install conan
+
+      - name: Create Conan package
+        run: |
+          conan profile detect --force
+          conan create . -s build_type=Release -s compiler.cppstd=20
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cxx: g++
+            build_type: Release
+          - compiler: clang
+            cxx: clang++
+            build_type: Debug
+    runs-on: ubuntu-latest
+    env:
+      CC: ${{ matrix.compiler }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON -DNABLANET_BUILD_EXAMPLES=ON
+
+      - name: Build and test
+        run: |
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Verify installed CMake consumer
+        run: |
+          cmake --install build --prefix "$PWD/install"
+          cmake -S tests/install_consumer -B install-consumer -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_PREFIX_PATH="$PWD/install"
+          cmake --build install-consumer --parallel
+          ./install-consumer/nablanet_install_consumer
+
+      - name: Install Conan 2
+        run: pipx install conan
+
+      - name: Create Conan package
+        run: |
+          conan profile detect --force
+          conan create . -s build_type=${{ matrix.build_type }} -s compiler.cppstd=20
+
+  linux-sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure sanitizer build
+        run: >-
+          cmake -S . -B build-sanitized -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build and test sanitizer build
+        run: |
+          cmake --build build-sanitized --parallel
+          ctest --test-dir build-sanitized --output-on-failure

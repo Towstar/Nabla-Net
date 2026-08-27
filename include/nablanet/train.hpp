@@ -2,6 +2,8 @@
 
 #include "optimizers.hpp"
 
+namespace nablanet {
+
 /// <summary>
 /// Trains a network according to the optimizer and training configuration.
 /// </summary>
@@ -12,3 +14,5 @@ TrainingReport train(
     const TrainingConfig& config,
     const ObjectiveConfig& objective
 );
+
+} // namespace nablanet

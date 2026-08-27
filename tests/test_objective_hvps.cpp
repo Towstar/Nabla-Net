@@ -1,5 +1,5 @@
-#include <nncpp/mlp.hpp>
-#include <nncpp/objective_functions.hpp>
+#include <nablanet/mlp.hpp>
+#include <nablanet/objective_functions.hpp>
 
 #include <cmath>
 #include <exception>
@@ -7,6 +7,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+
+using namespace nablanet;
 
 namespace {
 
@@ -184,6 +186,19 @@ void test_activated_output_mse_loss_hvp()
     );
 }
 
+void test_exponential_loss_hvp()
+{
+    const ObjectiveFunctions objective = make_exponential_objective();
+    const Values logits{ 0.4, -0.9 };
+    const Values target{ 1.0, -1.0 };
+    const Values logits_tangent{ 0.3, -0.2 };
+
+    require_hvp_matches_loss_gradient_difference(
+        objective, logits, target, logits_tangent,
+        "Exponential loss HVP must match a central difference of its loss gradient"
+    );
+}
+
 } // namespace
 
 int main()
@@ -192,6 +207,7 @@ int main()
         test_bce_loss_hvp();
         test_softmax_cross_entropy_loss_hvp();
         test_activated_output_mse_loss_hvp();
+        test_exponential_loss_hvp();
         std::cout << "[PASS] objective loss Hessian-vector products\n";
         return 0;
     } catch (const std::exception& exception) {
