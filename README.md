@@ -76,29 +76,6 @@ symbols live in `namespace nablanet`:
 const nablanet::MLP network = nablanet::make_mlp({2, 3, 1}, 7);
 ```
 
-## Exponential and hinge objectives
-
-`make_exponential_objective()` and `make_hinge_objective()` are binary,
-coordinatewise objectives. Both consume the output layer's pre-activations,
-require every target coordinate to be exactly `-1.0` or `+1.0`, and average
-their per-coordinate loss values. They are not softmax multiclass objectives.
-
-For margin classification, configure a linear output layer and use signed
-labels:
-
-```cpp
-nablanet::MLP model = nablanet::make_zero_network({1, 1});
-model.layer_activations = {nablanet::Activations::Linear};
-
-const nablanet::ObjectiveConfig objective = nablanet::make_objective_config(
-    nablanet::make_hinge_objective()
-);
-```
-
-Exponential loss provides exact Hessian-vector products. Hinge loss is
-non-smooth, uses the zero subgradient when `target * logit == 1`, and is
-therefore rejected by curvature optimizers such as Newton-CG.
-
 ## Conan 2
 
 The repository contains a Conan 2 recipe for the static package
