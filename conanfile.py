@@ -9,8 +9,8 @@ from conan.tools.files import load
 class NablaNetConan(ConanFile):
     name = "nablanet"
     license = "MIT"
-    homepage = "https://github.com/Towstar/Neural-Network-Implementation-In-CPP"
-    url = "https://github.com/Towstar/Neural-Network-Implementation-In-CPP"
+    homepage = "https://github.com/Towstar/Nabla-Net"
+    url = "https://github.com/Towstar/Nabla-Net"
     description = "A dependency-free C++20 multilayer-perceptron learning library."
     topics = ("machine-learning", "neural-network", "cpp20", "education")
     package_type = "static-library"
