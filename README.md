@@ -76,6 +76,58 @@ symbols live in `namespace nablanet`:
 const nablanet::MLP network = nablanet::make_mlp({2, 3, 1}, 7);
 ```
 
+## Standalone norms
+
+`<nablanet/norms.hpp>` (also included by the umbrella header) provides read-only
+norm diagnostics independently of objectives and regularizers:
+
+```cpp
+const auto l2 = nablanet::make_lp_norm(2.0);
+const double length = nablanet::vector_norm({3.0, 4.0}, l2); // 5, not 25
+const double parameters = nablanet::network_norm(network, l2); // with biases
+const double weights = nablanet::network_norm(network, l2, false);
+const auto gradients = nablanet::make_zero_gradients_like(network);
+const double gradient_length = nablanet::network_norm(gradients, l2);
+```
+
+The factory accepts any finite real `p >= 1`, including fractional values, or
+`std::numeric_limits<double>::infinity()` for the maximum absolute component.
+It computes `(sum(abs(x)^p))^(1/p)` using maximum-magnitude scaling. Empty and
+zero vectors return zero. An L2 norm is the square root of a sum of squares;
+the existing L2 regularizer uses a squared penalty. Norms do not add losses,
+gradients, proximal updates, or change optimizer/stopping behavior.
+
+`NormFunction` holds a display `name` and an `evaluate(const Values&)` callback.
+Use the helpers to validate custom evaluations. They require a nonempty name,
+a callback, and finite inputs. Negative/NaN results throw `std::invalid_argument`;
+positive infinite results throw `std::overflow_error`. Factory input errors
+also throw `std::invalid_argument`; unrepresentable norms throw
+`std::overflow_error`. Other callback exceptions propagate. Empty input returns
+zero without invoking the callback; custom callbacks must obey the norm axioms
+on nonempty inputs, which runtime validation cannot prove.
+
+For example, a caller can supply a weighted L1 norm:
+
+```cpp
+const nablanet::NormFunction weighted_l1{
+    "weighted L1", [](const nablanet::Values& values) {
+        double result = 0.0;
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            result += static_cast<double>(i + 1) * std::abs(values[i]);
+        }
+        return result;
+    }
+}; // include <cmath> for std::abs
+```
+
+`network_norm` is overloaded for `MLP` parameters and `NetworkGradients`.
+Both overloads evaluate one global vector in layer order:
+weights, then selected biases, in their stored order. Biases are included by
+default. Parameters require a valid network (including finite excluded biases);
+the gradient overload requires only finite selected components, not a reference
+network. These are entrywise vector norms, not induced matrix/operator norms.
+The existing `gradient_l2_norm` and `maximum_absolute_gradient` APIs are unchanged.
+
 ## Conan 2
 
 The repository contains a Conan 2 recipe for the static package

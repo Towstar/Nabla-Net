@@ -13,6 +13,7 @@ option(NABLANET_BUILD_EXAMPLES "Build NablaNet usage examples" OFF)
 set(NABLANET_CORE_SOURCES
     src/common.cpp
     src/mlp.cpp
+    src/norms.cpp
     src/objective_functions.cpp
     src/optimizers.cpp
     src/train.cpp
@@ -57,6 +58,7 @@ if(BUILD_TESTING)
     endfunction()
 
     add_nablanet_test(nablanet_test_numerics tests/test_numerics.cpp Numerics)
+    add_nablanet_test(nablanet_test_norms tests/test_norms.cpp Numerics)
     add_nablanet_test(nablanet_test_initializers tests/test_initializers.cpp Initialization)
     add_nablanet_test(nablanet_test_activations tests/test_activations.cpp Activations)
     add_nablanet_test(nablanet_test_adamw tests/test_adamw.cpp Optimizers)
