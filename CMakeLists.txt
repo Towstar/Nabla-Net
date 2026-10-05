@@ -8,6 +8,9 @@ include(GNUInstallDirs)
 include(CTest)
 include(CMakePackageConfigHelpers)
 
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
+
 option(NABLANET_BUILD_EXAMPLES "Build NablaNet usage examples" OFF)
 
 set(NABLANET_CORE_SOURCES
@@ -22,6 +25,7 @@ set(NABLANET_CORE_SOURCES
 
 add_library(NablaNet STATIC ${NABLANET_CORE_SOURCES})
 add_library(NablaNet::NablaNet ALIAS NablaNet)
+target_link_libraries(NablaNet PUBLIC Threads::Threads)
 
 target_compile_features(NablaNet PUBLIC cxx_std_20)
 set_target_properties(NablaNet PROPERTIES CXX_EXTENSIONS OFF)
@@ -41,6 +45,9 @@ endif()
 if(NABLANET_BUILD_EXAMPLES)
     add_executable(nablanet_example examples/nablanet_library_example.cpp)
     target_link_libraries(nablanet_example PRIVATE NablaNet::NablaNet)
+
+    add_executable(nablanet_concurrency_benchmark examples/concurrency_benchmark.cpp)
+    target_link_libraries(nablanet_concurrency_benchmark PRIVATE NablaNet::NablaNet)
 endif()
 
 if(BUILD_TESTING)

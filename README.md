@@ -50,6 +50,40 @@ Focused objective checks are available with:
 ctest --test-dir build -L Objectives --output-on-failure
 ```
 
+### Serial performance baseline
+
+With `NABLANET_BUILD_EXAMPLES=ON`, the `nablanet_concurrency_benchmark` target
+measures serial `batch_loss` on a fixed-seed `{16, 32, 1}` network and 8,192
+generated samples. Each sample has 16 inputs in `[-1, 1]` and one binary target.
+Before timing, it also checks that combining four equal ranges or three
+unequal ranges matches the serial batch loss within `1e-12`. These checks
+evaluate the ranges sequentially. Network construction, sample generation,
+partition checks, and three warmup calls are outside the measured region;
+only the following 20 loss calls and checksum accumulation are timed.
+
+After configuring the build as shown above, build and run on Windows with
+the Visual Studio generator:
+
+```powershell
+cmake --build build --config Release --target nablanet_concurrency_benchmark
+.\build\Release\nablanet_concurrency_benchmark.exe
+```
+
+For a single-configuration Release build:
+
+```sh
+cmake --build build --target nablanet_concurrency_benchmark
+./build/nablanet_concurrency_benchmark
+```
+
+The output includes average milliseconds per call, the batch loss, and the
+sum of the 20 timed losses. Compare later parallel versions using the same
+network, samples, compiler, build configuration, and machine. Fixed seeds
+reproduce inputs and parameters within the same toolchain; standard-library
+random distributions can differ between toolchains. Timing varies with
+system load, so the measured average is a baseline rather than a pass/fail
+threshold. The benchmark uses synthetic data and does not train the network.
+
 ## Use from CMake
 
 Install the static library to a prefix:

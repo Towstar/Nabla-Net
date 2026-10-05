@@ -6,6 +6,9 @@
 #include <numeric>
 #include <stdexcept>
 #include <utility>
+#include <exception>
+#include <thread>
+#include <vector>
 
 namespace nablanet {
 
@@ -771,6 +774,67 @@ double sample_cost(const MLP& network, const ForwardCache& cache, const Values& 
     return value;
 }
 
+namespace {
+
+// Computes the sum of sample costs over a range of samples in a batch.
+// Useful for each worker having a subset of the batch to compute its loss contribution.
+double loss_sum_range(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective,
+    std::size_t begin,
+    std::size_t end
+)
+{
+    if (begin > end || end > batch.size()) {
+        throw std::invalid_argument("Invalid loss range.");
+    }
+
+    double sum = 0.0;
+    for (std::size_t index = begin; index < end; ++index) {
+        const Sample& sample = batch[index];
+        const ForwardCache cache =
+            forward_pass(network, sample.input);
+        const double cost =
+            sample_cost(network, cache, sample.target, objective);
+
+        sum = sum + cost;
+    }
+    return sum;
+}
+
+// Workers only fill in their assigned slots for the costs.
+void compute_losses_range(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective,
+    Values& costs,
+    std::size_t begin,
+    std::size_t end
+    ){
+    if (begin > end || end > batch.size()) {
+        throw std::invalid_argument("Invalid loss range.");
+    }
+    if (costs.size() != batch.size()) {
+        throw std::invalid_argument(
+            "Cost buffer size must match batch size."
+        );
+    }
+    for (std::size_t index = begin; index < end; ++index) {
+        const Sample& sample = batch[index];
+        const ForwardCache cache =
+            forward_pass(network, sample.input);
+
+        costs[index] = sample_cost(
+            network, cache, sample.target, objective
+        );
+    }
+}
+
+
+
+} // namespace
+
 // BCE
 double batch_loss(const MLP& network, const Dataset& batch) {
     if (batch.empty()) {
@@ -793,12 +857,92 @@ double batch_loss(const MLP& network, const Dataset& batch, const ObjectiveFunct
     if (batch.empty()) {
         throw std::invalid_argument("Batch must not be empty.");
     }
-    double sum = std::accumulate(batch.begin(), batch.end(), 0.0,
-        [&network, objective](double accumulated_cost, const Sample& sample) {
-            const ForwardCache cache = forward_pass(network, sample.input);
-            const double cost = sample_cost(network, cache, sample.target, objective);
-            return accumulated_cost + cost;
-        });
+    
+    const ObjectiveFunctions local_objective = objective;
+    const double sum = loss_sum_range(
+        network, batch, local_objective, 0, batch.size()
+    );
+
+    if (!std::isfinite(sum)) {
+        throw std::overflow_error(
+            "Objective batch loss accumulation is not finite."
+        );
+    }
+
+    const double average = sum / static_cast<double>(batch.size());
+    
+    if (!std::isfinite(average)) {
+        throw std::overflow_error(
+            "Objective batch loss average is not finite."
+        );
+    }
+
+    return average;
+}
+
+double batch_loss(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective,
+    BatchExecutionOptions execution
+) {
+     if (execution.max_workers == 0) {
+        throw std::invalid_argument(
+            "Worker budget must be greater than zero."
+        );
+    }
+    validate_objective_functions(objective);
+
+    if (batch.empty()) {
+        throw std::invalid_argument("Batch must not be empty.");
+    }
+
+    const std::size_t worker_count =
+        std::min(execution.max_workers, batch.size());
+
+    if (worker_count == 1) {
+        return batch_loss(network, batch, objective);
+    }
+
+    Values costs(batch.size(), 0.0);
+    std::vector<std::exception_ptr> failures(worker_count);
+
+    std::vector<std::jthread> workers;
+    workers.reserve(worker_count);
+
+    const std::size_t base_size = batch.size() / worker_count;
+    const std::size_t extra = batch.size() % worker_count;
+    std::size_t begin = 0;
+
+    for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
+        const std::size_t end = begin + base_size + (worker_index < extra ? 1u : 0u);
+        workers.emplace_back(
+            [&, begin, end, worker_index]() {
+                try {
+                    compute_losses_range(network, batch, objective, costs, begin, end);
+                } catch (...) {
+                    failures[worker_index] = std::current_exception();
+                }
+            }
+        );
+
+        begin = end;
+    }
+
+    for (std::jthread& worker : workers) {
+        worker.join();
+    }
+
+    for (const std::exception_ptr& failure : failures) {
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+    }
+
+    double sum = 0.0;
+    for (const double cost : costs) {
+        sum = sum + cost;
+    }
 
     if (!std::isfinite(sum)) {
         throw std::overflow_error(

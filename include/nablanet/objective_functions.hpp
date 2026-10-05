@@ -2,6 +2,7 @@
 
 #include "mlp.hpp"
 
+#include <cstddef>
 #include <vector>
 
 namespace nablanet {
@@ -103,6 +104,15 @@ double sample_cost(
 );
 
 /// <summary>
+/// Controls the worker budget for batch evaluation.
+/// </summary>
+struct BatchExecutionOptions {
+    // Upper limit on workers; the implementation may use fewer.
+    // One selects serial evaluation. Zero is invalid.
+    std::size_t max_workers{1};
+};
+
+/// <summary>
 /// Averages default-objective loss across a non-empty batch.
 /// </summary>
 double batch_loss(
@@ -117,6 +127,21 @@ double batch_loss(
     const MLP& network,
     const Dataset& batch,
     const ObjectiveFunctions& objective
+);
+
+/// <summary>
+/// Averages a specified objective's loss within the supplied worker budget.
+/// Sample losses are summed in original sample-index order.
+/// Parallel evaluation requires activation and objective callbacks that
+/// support concurrent calls. Matching serial results also requires identical
+/// per-sample losses. The network and batch must remain unchanged during the
+/// call. A zero worker budget is rejected with std::invalid_argument.
+/// </summary>
+double batch_loss(
+    const MLP& network,
+    const Dataset& batch,
+    const ObjectiveFunctions& objective,
+    BatchExecutionOptions execution
 );
 
 /// <summary>
